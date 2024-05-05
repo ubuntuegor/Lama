@@ -31,7 +31,7 @@ class options args =
     val infile = ref (None : string option)
     val outfile = ref (None : string option)
     val paths = ref [ X86.get_std_path () ]
-    val mode = ref (`Default : [ `Default | `Eval | `SM | `Compile | `BC ])
+    val mode = ref (`Default : [ `Default | `Eval | `SM | `Compile | `BC | `Wasm ])
     val curdir = Unix.getcwd ()
     val debug = ref false
 
@@ -64,6 +64,7 @@ class options args =
           | "-s" -> self#set_mode `SM
           | "-b" -> self#set_mode `BC
           | "-i" -> self#set_mode `Eval
+          | "-wasm" -> self#set_mode `Wasm
           | "-ds" -> self#set_dump dump_sm
           | "-dsrc" -> self#set_dump dump_source
           | "-dp" -> self#set_dump dump_ast
@@ -197,6 +198,7 @@ let[@ocaml.warning "-32"] main =
         cmd#dump_source (snd prog);
         match cmd#get_mode with
         | `Default | `Compile -> ignore @@ X86.build cmd prog
+        | `Wasm -> Wasm.build cmd prog
         | `BC -> SM.ByteCode.compile cmd (SM.compile cmd prog)
         | _ ->
             let rec read acc =
