@@ -5,6 +5,33 @@ let compile_instr instr = match instr with
   | BINOP op -> (
     match op with
       | "+" -> [ "i32.add" ]
+      | "-" -> [ "i32.sub" ]
+      | "*" -> [ "i32.mul" ]
+      | "/" -> [ "i32.div_s" ]
+      | "%" -> [ "i32.rem_s" ]
+      | "==" -> [ "i32.eq" ]
+      | "!=" -> [ "i32.ne" ]
+      | "<=" -> [ "i32.le_s" ]
+      | "<" -> [ "i32.lt_s" ]
+      | ">=" -> [ "i32.ge_s" ]
+      | ">" -> [ "i32.gt_s" ]
+      | "&&" -> [
+        "(if (param i32) (result i32)";
+        "(then";
+        "i32.const 0";
+        "i32.ne";
+        ")";
+        "(else";
+        "drop";
+        "i32.const 0";
+        ")";
+        ")"
+      ]
+      | "!!" -> [
+        "i32.or";
+        "i32.const 0";
+        "i32.ne"
+      ]
       | _ -> Printf.printf "unsupported binop %s\n" op ; []
     )
   | CALL (f, _, _) -> [ Printf.sprintf "call $%s" f ]
