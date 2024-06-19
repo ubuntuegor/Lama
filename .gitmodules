@@ -1,0 +1,3 @@
+[submodule "vendor/wasm"]
+	path = src/vendor/wasm
+	url = https://github.com/WebAssembly/gc.git

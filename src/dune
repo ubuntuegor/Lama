@@ -45,8 +45,8 @@
 
 (library
  (name liba)
- (modules Language Pprinter stdpath version X86 Wasm SM)
- (libraries GT ostap)
+ (modules Language Pprinter stdpath version X86 MyWasm SM)
+ (libraries GT ostap wasm)
  (flags
   (:standard
    -rectypes
@@ -110,3 +110,5 @@
 
 (cram
  (deps ./Driver.exe))
+
+(vendored_dirs vendor)

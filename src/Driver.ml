@@ -198,7 +198,7 @@ let[@ocaml.warning "-32"] main =
         cmd#dump_source (snd prog);
         match cmd#get_mode with
         | `Default | `Compile -> ignore @@ X86.build cmd prog
-        | `Wasm -> Wasm.build cmd prog
+        | `Wasm -> MyWasm.build cmd prog
         | `BC -> SM.ByteCode.compile cmd (SM.compile cmd prog)
         | _ ->
             let rec read acc =
