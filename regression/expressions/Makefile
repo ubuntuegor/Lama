@@ -11,8 +11,9 @@ $(TESTS): %: %.lama
 	@LAMA=../../runtime $(RC) $< && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log
 	@cat $@.input | LAMA=../../runtime $(RC) -i $< > $@.log && diff $@.log orig/$@.log
 	@cat $@.input | LAMA=../../runtime $(RC) -s $< > $@.log && diff $@.log orig/$@.log
+	@$(RC) -wasm $< && cat $@.input | node ../../run.js $@.wasm > $@.log && diff $@.log orig/$@.log
 
 clean:
-	rm -f *.log *.s *~
+	rm -f *.log *.s *~ *.wast *.wasm
 	find . -maxdepth 1 -type f -not -name '*.*' -not -name 'Makefile' -delete
 
