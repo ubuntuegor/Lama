@@ -60,7 +60,7 @@
    ((pps GT.ppx_all)
     SM
     X86
-    Wasm)
+    MyWasm)
    ((action
      (run %{project_root}/src/pp5+gt+plugins+ostap+dump.byte %{input-file}))
     Language
