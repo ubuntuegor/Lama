@@ -330,75 +330,81 @@ let rec compile_list (env : env) ast =
         ] )
   | Expr.Scope (decls, instr) ->
       let env = env#enter_scope in
-      let locals =
-        List.filter_map
-          (fun (name, decl) ->
-            match decl with
-            | `Local, `Variable init -> Some (name, init)
-            | _, `Variable _ -> report_error "only local variables supported"
-            | _ -> None)
-          decls
-      in
-      let env =
-        List.fold_left
-          (fun env (name, _) -> snd (env#add_local name))
-          env locals
-      in
-
-      let functions =
-        List.filter_map
-          (fun (name, decl) ->
-            match decl with
-            | `Local, `Fun (args, body) -> Some (name, (args, body))
-            | _, `Fun _ -> report_error "only local functions supported"
-            | _ -> None)
-          decls
-      in
-      let env =
-        List.fold_left
-          (fun env (name, (args, body)) ->
-            match body with
-            | Expr.Scope (decls, instr) ->
-                let decls =
-                  List.map (fun arg -> (arg, (`Local, `Variable None))) args
-                  @ decls
-                in
-                let env_after_function, code =
-                  compile_list env#enter_function (Expr.Scope (decls, instr))
-                in
-                let locals_count =
-                  env_after_function#get_locals_count - List.length args
-                in
-                let env = env_after_function#exit_function env in
-                let t =
-                  Wt.(FuncT (List.map (fun _ -> NumT I32T) args, [ NumT I32T ]))
-                in
-                let _, env = env#add_function name t locals_count code in
-                env
-            | _ -> report_error "expected scope as function root")
-          env functions
-      in
-
-      let env, locals_init_code =
-        List.fold_left
-          (fun (env, acc) (name, instr) ->
-            let env, code = compile_list env instr in
+      let env, code =
+        compile_scope decls instr
+          (fun env name -> snd (env#add_local name))
+          (fun env name ->
             match env#get name with
-            | Some (Local index) ->
-                (env, acc @ code @ [ phrase @@ Wa.LocalSet (get_idx @@ index) ])
+            | Some (Local index) -> phrase @@ Wa.LocalSet (get_idx @@ index)
             | _ -> report_error "local was not added properly")
-          (env, [])
-          (List.filter_map
-             (fun (name, init) ->
-               match init with Some i -> Some (name, i) | _ -> None)
-             locals)
+          env
       in
-
-      let env, code = compile_list env instr in
-      (env#exit_scope, locals_init_code @ code)
+      (env#exit_scope, code)
   | _ ->
       report_error
       @@ Printf.sprintf "unsupported structure %s\n" (GT.show Expr.t ast)
+
+and compile_scope decls instr add_local init_local env =
+  let locals =
+    List.filter_map
+      (fun (name, decl) ->
+        match decl with
+        | `Local, `Variable init -> Some (name, init)
+        | _, `Variable _ -> report_error "only local variables supported"
+        | _ -> None)
+      decls
+  in
+  let env =
+    List.fold_left (fun env (name, _) -> add_local env name) env locals
+  in
+
+  let functions =
+    List.filter_map
+      (fun (name, decl) ->
+        match decl with
+        | `Local, `Fun (args, body) -> Some (name, (args, body))
+        | _, `Fun _ -> report_error "only local functions supported"
+        | _ -> None)
+      decls
+  in
+  let env =
+    List.fold_left
+      (fun env (name, (args, body)) ->
+        match body with
+        | Expr.Scope (decls, instr) ->
+            let decls =
+              List.map (fun arg -> (arg, (`Local, `Variable None))) args @ decls
+            in
+            let env_after_function, code =
+              compile_list env#enter_function (Expr.Scope (decls, instr))
+            in
+            let locals_count =
+              env_after_function#get_locals_count - List.length args
+            in
+            let env = env_after_function#exit_function env in
+            let t =
+              Wt.(FuncT (List.map (fun _ -> NumT I32T) args, [ NumT I32T ]))
+            in
+            let _, env = env#add_function name t locals_count code in
+            env
+        | _ -> report_error "expected scope as function root")
+      env functions
+  in
+
+  let env, locals_init_code =
+    List.fold_left
+      (fun (env, acc) (name, instr) ->
+        let env, code = compile_list env instr in
+        (env, acc @ code @ [ init_local env name ]))
+      (env, [])
+      (List.filter_map
+         (fun (name, init) ->
+           match init with Some i -> Some (name, i) | _ -> None)
+         locals)
+  in
+
+  let env, code = compile_list env instr in
+  (env, locals_init_code @ code)
 
 let compile ast =
   let env = new env in
@@ -409,75 +415,19 @@ let compile ast =
       in
       let _, env = env#add_function_import "read" (FuncT ([], [ NumT I32T ])) in
 
-      let globals =
-        List.filter_map
-          (fun (name, decl) ->
-            match decl with
-            | `Local, `Variable init -> Some (name, init)
-            | _, `Variable _ -> report_error "only local variables supported"
-            | _ -> None)
-          decls
-      in
-      let env =
-        List.fold_left
-          (fun env (name, _) -> snd (env#add_global name))
-          env globals
-      in
-
-      let functions =
-        List.filter_map
-          (fun (name, decl) ->
-            match decl with
-            | `Local, `Fun (args, body) -> Some (name, (args, body))
-            | _, `Fun _ -> report_error "only local functions supported"
-            | _ -> None)
-          decls
-      in
-      let env =
-        List.fold_left
-          (fun env (name, (args, body)) ->
-            match body with
-            | Expr.Scope (decls, instr) ->
-                let decls =
-                  List.map (fun arg -> (arg, (`Local, `Variable None))) args
-                  @ decls
-                in
-                let env_after_function, code =
-                  compile_list env#enter_function (Expr.Scope (decls, instr))
-                in
-                let locals_count =
-                  env_after_function#get_locals_count - List.length args
-                in
-                let env = env_after_function#exit_function env in
-                let t =
-                  Wt.(FuncT (List.map (fun _ -> NumT I32T) args, [ NumT I32T ]))
-                in
-                let _, env = env#add_function name t locals_count code in
-                env
-            | _ -> report_error "expected scope as function root")
-          env functions
-      in
-
-      let env, globals_init_code =
-        List.fold_left
-          (fun (env, acc) (name, instr) ->
-            let env, code = compile_list env instr in
+      let env, code =
+        compile_scope decls (Expr.Ignore instr)
+          (fun env name -> snd (env#add_global name))
+          (fun env name ->
             match env#get name with
-            | Some (Global index) ->
-                (env, acc @ code @ [ phrase @@ Wa.GlobalSet (get_idx @@ index) ])
+            | Some (Global index) -> phrase @@ Wa.GlobalSet (get_idx @@ index)
             | _ -> report_error "global was not added properly")
-          (env, [])
-          (List.filter_map
-             (fun (name, init) ->
-               match init with Some i -> Some (name, i) | _ -> None)
-             globals)
+          env
       in
-
-      let env, code = compile_list env (Expr.Ignore instr) in
       let _, env =
         env#add_function "main"
           (FuncT ([], []))
-          env#get_locals_count (globals_init_code @ code)
+          env#get_locals_count (code)
       in
       let env = env#export_function "main" in
       env#assemble_module
