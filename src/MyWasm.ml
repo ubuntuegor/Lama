@@ -41,6 +41,10 @@ let rec get_last = function
   | x :: [] -> x
   | _ :: xs -> get_last xs
 
+let rec replace idx value = function
+  | [] -> raise (Failure "length exceeded in replace")
+  | x :: xs -> if idx = 0 then value :: xs else x :: replace (idx - 1) value xs
+
 class lexical_scopes =
   object (self)
     val scopes : w_value M.t list = [ M.empty ]
@@ -73,6 +77,7 @@ class env =
     val locals = 0
     val exports = []
     val scopes = new lexical_scopes
+    val stack_depth = 0
 
     method upsert_type t =
       let type_idx, types = upsert t types in
@@ -90,6 +95,33 @@ class env =
           {<types
            ; functions = functions @ [ ImportFunc (name, type_idx) ]
            ; scopes = scopes#add name (Callable func_idx)>} )
+
+    method allocate_functions names =
+      let _, scopes =
+        List.fold_left
+          (fun (idx, scopes) name -> (idx + 1, scopes#add name (Callable idx)))
+          (List.length functions, scopes)
+          names
+      in
+      let functions = functions @ List.map (fun _ -> Func (0, 0, [])) names in
+      {<scopes; functions>}
+
+    method place_function name t locals_count body =
+      let type_idx, types =
+        upsert Wt.(RecT [ SubT (Final, [], DefFuncT t) ]) types
+      in
+      let func_idx =
+        match self#get name with
+        | Some (Callable x) -> x
+        | _ ->
+            report_error
+            @@ Printf.sprintf "function \"%s\" not allocated before placement"
+                 name
+      in
+      {<types
+       ; functions = replace func_idx
+                       (Func (type_idx, locals_count, body))
+                       functions>}
 
     method add_function name t locals_count body =
       let type_idx, types =
@@ -119,14 +151,28 @@ class env =
 
     method get_scopes_ = scopes
     method get name = scopes#get name
-    method enter_function = {<scopes = scopes#enter_function; locals = 0>}
+
+    method enter_function =
+      {<scopes = scopes#enter_function; locals = 0; stack_depth = 0>}
 
     method exit_function (old_env : env) =
-      {<scopes = old_env#get_scopes_; locals = old_env#get_locals_count>}
+      {<scopes = old_env#get_scopes_
+       ; locals = old_env#get_locals_count
+       ; stack_depth = old_env#get_stack_depth_>}
 
     method enter_scope = {<scopes = scopes#enter_scope>}
     method exit_scope = {<scopes = scopes#exit_scope>}
     method get_locals_count = locals
+    method put_on_stack = {<stack_depth = stack_depth + 1>}
+    method eat_from_stack = {<stack_depth = stack_depth - 1>}
+    method eat_n_from_stack n = {<stack_depth = stack_depth - n>}
+    method get_stack_depth_ = stack_depth
+
+    method compare_stack_depth (other_env : env) =
+      stack_depth - other_env#get_stack_depth_
+
+    method reset_stack_depth (other_env : env) =
+      {<stack_depth = other_env#get_stack_depth_>}
 
     method assemble_module =
       let types = List.map phrase types in
@@ -200,6 +246,8 @@ let rec compile_list (env : env) ast =
                     (env, acc @ code))
                   (env, []) args
               in
+              let env = env#eat_n_from_stack @@ List.length args in
+              let env = env#put_on_stack in
               (env, code @ [ phrase @@ Wa.Call (get_idx func_idx) ])
           | _ ->
               report_error
@@ -210,6 +258,7 @@ let rec compile_list (env : env) ast =
   | Expr.Binop (op, lhs, rhs) ->
       let env, lhscode = compile_list env lhs in
       let env, rhscode = compile_list env rhs in
+      let env = env#eat_from_stack in
       let env, opcode =
         match op with
         | "+" -> (env, [ phrase @@ get_binary Wa.I32Op.Add ])
@@ -256,18 +305,21 @@ let rec compile_list (env : env) ast =
         | _ -> report_error @@ Printf.sprintf "unsupported binop %s\n" op
       in
       (env, lhscode @ rhscode @ opcode)
-  | Expr.Const i -> (env, [ phrase @@ get_const i ])
+  | Expr.Const i -> (env#put_on_stack, [ phrase @@ get_const i ])
+  | Expr.Skip -> (env, [])
   | Expr.Seq (s1, s2) ->
       let env, code1 = compile_list env s1 in
       let env, code2 = compile_list env s2 in
       (env, code1 @ code2)
   | Expr.Ignore s ->
       let env, code = compile_list env s in
-      (env, code @ [ phrase Wa.Drop ])
+      (env#eat_from_stack, code @ [ phrase Wa.Drop ])
   | Expr.Var name -> (
       match env#get name with
-      | Some (Global index) -> (env, [ phrase @@ Wa.GlobalGet (get_idx index) ])
-      | Some (Local index) -> (env, [ phrase @@ Wa.LocalGet (get_idx index) ])
+      | Some (Global index) ->
+          (env#put_on_stack, [ phrase @@ Wa.GlobalGet (get_idx index) ])
+      | Some (Local index) ->
+          (env#put_on_stack, [ phrase @@ Wa.LocalGet (get_idx index) ])
       | _ ->
           report_error
           @@ Printf.sprintf "trying to get, var with name \"%s\" not found" name
@@ -289,16 +341,19 @@ let rec compile_list (env : env) ast =
           @@ Printf.sprintf "trying to set, var with name \"%s\" not found" name
       )
   | Expr.If (c, s1, s2) ->
-      let env, c_code = compile_list env c in
-      let env, s1_code = compile_list env s1 in
-      let env, s2_code = compile_list env s2 in
-      ( env,
-        c_code
-        @ [
-            phrase @@ Wa.If (ValBlockType (Some (NumT I32T)), s1_code, s2_code);
-          ] )
+      let env', c_code = compile_list env c in
+      let env = env'#reset_stack_depth env in
+      let env', s1_code = compile_list env s1 in
+      let env = env'#reset_stack_depth env in
+      let env', s2_code = compile_list env' s2 in
+      let t =
+        if env'#compare_stack_depth env = 0 then Wa.ValBlockType None
+        else Wa.ValBlockType (Some (NumT I32T))
+      in
+      (env', c_code @ [ phrase @@ Wa.If (t, s1_code, s2_code) ])
   | Expr.While (cond, body) ->
-      let env, c_code = compile_list env cond in
+      let env', c_code = compile_list env cond in
+      let env = env'#reset_stack_depth env in
       let env, body_code = compile_list env body in
       ( env,
         [
@@ -320,7 +375,8 @@ let rec compile_list (env : env) ast =
         ] )
   | Expr.DoWhile (body, cond) ->
       let env, body_code = compile_list env body in
-      let env, c_code = compile_list env cond in
+      let env', c_code = compile_list env cond in
+      let env = env'#reset_stack_depth env in
       ( env,
         [
           phrase
@@ -367,6 +423,7 @@ and compile_scope decls instr add_local init_local env =
         | _ -> None)
       decls
   in
+  let env = env#allocate_functions @@ List.map fst functions in
   let env =
     List.fold_left
       (fun env (name, (args, body)) ->
@@ -385,8 +442,7 @@ and compile_scope decls instr add_local init_local env =
             let t =
               Wt.(FuncT (List.map (fun _ -> NumT I32T) args, [ NumT I32T ]))
             in
-            let _, env = env#add_function name t locals_count code in
-            env
+            env#place_function name t locals_count code
         | _ -> report_error "expected scope as function root")
       env functions
   in
@@ -395,7 +451,7 @@ and compile_scope decls instr add_local init_local env =
     List.fold_left
       (fun (env, acc) (name, instr) ->
         let env, code = compile_list env instr in
-        (env, acc @ code @ [ init_local env name ]))
+        (env#eat_from_stack, acc @ code @ [ init_local env name ]))
       (env, [])
       (List.filter_map
          (fun (name, init) ->
@@ -425,9 +481,7 @@ let compile ast =
           env
       in
       let _, env =
-        env#add_function "main"
-          (FuncT ([], []))
-          env#get_locals_count (code)
+        env#add_function "main" (FuncT ([], [])) env#get_locals_count code
       in
       let env = env#export_function "main" in
       env#assemble_module
