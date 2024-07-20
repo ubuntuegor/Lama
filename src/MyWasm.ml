@@ -12,6 +12,10 @@ let get_compare b = Wa.Compare (get_i32 b)
 let get_test_op b = Wa.Test (get_i32 b)
 let get_idx i = phrase @@ Int32.of_int i
 
+let any_type = Wt.(RefT (NoNull, AnyHT))
+let unbox = [ phrase @@ Wa.RefCast (NoNull, I31HT); phrase @@ Wa.I31Get SX ]
+let box = [ phrase @@ Wa.RefI31 ]
+
 type w_func =
   | ImportFunc of string * int (* name, type_idx *)
   | Func of int * int * Wa.instr list (* type_idx, locals_count, body *)
@@ -202,7 +206,7 @@ class env =
                          ftype = get_idx type_idx;
                          locals =
                            List.init locals_count (fun _ ->
-                               phrase @@ { ltype = NumT I32T });
+                               phrase @@ { ltype = any_type });
                          body;
                        })
             | _ -> None)
@@ -213,8 +217,8 @@ class env =
             phrase
             @@ Wa.
                  {
-                   gtype = GlobalT (Var, NumT I32T);
-                   ginit = phrase @@ [ phrase @@ get_const 0 ];
+                   gtype = GlobalT (Var, any_type);
+                   ginit = phrase @@ [ phrase @@ get_const 0 ] @ box;
                  })
       in
       let exports =
@@ -304,8 +308,8 @@ let rec compile_list (env : env) ast =
               ] )
         | _ -> report_error @@ Printf.sprintf "unsupported binop %s\n" op
       in
-      (env, lhscode @ rhscode @ opcode)
-  | Expr.Const i -> (env#put_on_stack, [ phrase @@ get_const i ])
+      (env, lhscode @ unbox @ rhscode @ unbox @ opcode @ box)
+  | Expr.Const i -> (env#put_on_stack, [ phrase @@ get_const i ] @ box)
   | Expr.Skip -> (env, [])
   | Expr.Seq (s1, s2) ->
       let env, code1 = compile_list env s1 in
@@ -348,9 +352,9 @@ let rec compile_list (env : env) ast =
       let env', s2_code = compile_list env' s2 in
       let t =
         if env'#compare_stack_depth env = 0 then Wa.ValBlockType None
-        else Wa.ValBlockType (Some (NumT I32T))
+        else Wa.ValBlockType (Some (any_type))
       in
-      (env', c_code @ [ phrase @@ Wa.If (t, s1_code, s2_code) ])
+      (env', c_code @ unbox @ [ phrase @@ Wa.If (t, s1_code, s2_code) ])
   | Expr.While (cond, body) ->
       let env', c_code = compile_list env cond in
       let env = env'#reset_stack_depth env in
@@ -365,6 +369,7 @@ let rec compile_list (env : env) ast =
                    @@ Wa.Loop
                         ( ValBlockType None,
                           c_code
+                          @ unbox
                           @ [
                               phrase @@ get_test_op Wa.I32Op.Eqz;
                               phrase @@ Wa.BrIf (get_idx 1);
@@ -382,7 +387,7 @@ let rec compile_list (env : env) ast =
           phrase
           @@ Wa.Loop
                ( ValBlockType None,
-                 body_code @ c_code @ [ phrase @@ Wa.BrIf (get_idx 0) ] );
+                 body_code @ c_code @ unbox @ [ phrase @@ Wa.BrIf (get_idx 0) ] );
         ] )
   | Expr.Scope (decls, instr) ->
       let env = env#enter_scope in
@@ -440,7 +445,7 @@ and compile_scope decls instr add_local init_local env =
             in
             let env = env_after_function#exit_function env in
             let t =
-              Wt.(FuncT (List.map (fun _ -> NumT I32T) args, [ NumT I32T ]))
+              Wt.(FuncT (List.map (fun _ -> any_type) args, [ any_type ]))
             in
             env#place_function name t locals_count code
         | _ -> report_error "expected scope as function root")
@@ -467,9 +472,9 @@ let compile ast =
   match ast with
   | Expr.Scope (decls, instr) ->
       let _, env =
-        env#add_function_import "write" (FuncT ([ NumT I32T ], [ NumT I32T ]))
+        env#add_function_import "write" (FuncT ([ any_type ], [ any_type ]))
       in
-      let _, env = env#add_function_import "read" (FuncT ([], [ NumT I32T ])) in
+      let _, env = env#add_function_import "read" (FuncT ([], [ any_type ])) in
 
       let env, code =
         compile_scope decls (Expr.Ignore instr)
