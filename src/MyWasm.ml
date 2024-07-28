@@ -11,8 +11,24 @@ let get_binary b = Wa.Binary (get_i32 b)
 let get_compare b = Wa.Compare (get_i32 b)
 let get_test_op b = Wa.Test (get_i32 b)
 let get_idx i = phrase @@ Int32.of_int i
-
+let any_ref_type = Wt.(NoNull, AnyHT)
 let any_type = Wt.(RefT (NoNull, AnyHT))
+
+let string_type =
+  Wt.(
+    RecT
+      [
+        SubT (Final, [], DefArrayT (ArrayT (FieldT (Var, PackStorageT Pack8))));
+      ])
+
+let array_type =
+  Wt.(
+    RecT
+      [
+        SubT (Final, [], DefArrayT (ArrayT (FieldT (Var, ValStorageT any_type))));
+      ])
+
+let ref_type_of n = Wt.(NoNull, VarHT (StatX (Int32.of_int n)))
 let unbox = [ phrase @@ Wa.RefCast (NoNull, I31HT); phrase @@ Wa.I31Get SX ]
 let box = [ phrase @@ Wa.RefI31 ]
 
@@ -50,7 +66,7 @@ let rec replace idx value = function
   | x :: xs -> if idx = 0 then value :: xs else x :: replace (idx - 1) value xs
 
 class lexical_scopes =
-  object (self)
+  object
     val scopes : w_value M.t list = [ M.empty ]
 
     method add name v =
@@ -77,10 +93,12 @@ class env =
   object (self)
     val types = []
     val functions = []
+    val datas = []
     val globals = 0
     val locals = 0
     val exports = []
     val scopes = new lexical_scopes
+    val secret_scope = M.empty
     val stack_depth = 0
 
     method upsert_type t =
@@ -137,6 +155,19 @@ class env =
          ; functions = functions @ [ Func (type_idx, locals_count, body) ]
          ; scopes = scopes#add name (Callable func_idx)>} )
 
+    method add_secret_function name t locals_count body =
+      match M.find_opt name secret_scope with
+      | None ->
+          let type_idx, types =
+            upsert Wt.(RecT [ SubT (Final, [], DefFuncT t) ]) types
+          in
+          let func_idx = List.length functions in
+          ( func_idx,
+            {<types
+             ; functions = functions @ [ Func (type_idx, locals_count, body) ]
+             ; secret_scope = M.add name func_idx secret_scope>} )
+      | Some func_idx -> (func_idx, self)
+
     method export_function name =
       match scopes#get name with
       | Some (Callable func_idx) ->
@@ -152,6 +183,10 @@ class env =
 
     method add_local name =
       (locals, {<locals = locals + 1; scopes = scopes#add name (Local locals)>})
+
+    method upsert_data str =
+      let data_idx, datas = upsert str datas in
+      (data_idx, {<datas>})
 
     method get_scopes_ = scopes
     method get name = scopes#get name
@@ -233,7 +268,13 @@ class env =
                      })
           exports
       in
-      phrase Wa.{ empty_module with imports; funcs; types; globals; exports }
+      let datas =
+        List.map
+          (fun s -> phrase @@ Wa.{ dinit = s; dmode = phrase @@ Passive })
+          datas
+      in
+      phrase
+        Wa.{ empty_module with imports; funcs; types; globals; exports; datas }
   end
 
 let rec compile_list (env : env) ast =
@@ -344,6 +385,55 @@ let rec compile_list (env : env) ast =
           report_error
           @@ Printf.sprintf "trying to set, var with name \"%s\" not found" name
       )
+  | Expr.Assign (Expr.ElemRef (arr, index), instr) ->
+      let block_type_idx, env =
+        env#upsert_type
+          Wt.(
+            RecT
+              [
+                SubT (Final, [], DefFuncT (FuncT ([ any_type ], [ any_type ])));
+              ])
+      in
+      let string_type_idx, env = env#upsert_type string_type in
+      let array_type_idx, env = env#upsert_type array_type in
+      let assign_func_idx, env =
+        env#add_secret_function "assign"
+          (* args: array, index, value *)
+          (* result: value *)
+          (Wt.FuncT ([ any_type; NumT I32T; any_type ], [ any_type ]))
+          0
+          [
+            phrase @@ Wa.LocalGet (get_idx 0);
+            phrase
+            @@ Wa.Block
+                 ( VarBlockType (get_idx block_type_idx),
+                   [
+                     phrase
+                     @@ Wa.BrOnCastFail
+                          (get_idx 0, any_ref_type, ref_type_of string_type_idx);
+                     phrase @@ Wa.LocalGet (get_idx 1);
+                     phrase @@ Wa.LocalGet (get_idx 2);
+                   ]
+                   @ unbox
+                   @ [
+                       phrase @@ Wa.ArraySet (get_idx string_type_idx);
+                       phrase @@ Wa.LocalGet (get_idx 2);
+                       phrase @@ Wa.Return;
+                     ] );
+            phrase @@ Wa.RefCast (ref_type_of array_type_idx);
+            phrase @@ Wa.LocalGet (get_idx 1);
+            phrase @@ Wa.LocalGet (get_idx 2);
+            phrase @@ Wa.ArraySet (get_idx array_type_idx);
+            phrase @@ Wa.LocalGet (get_idx 2);
+          ]
+      in
+      let env, arr_code = compile_list env arr in
+      let env, index_code = compile_list env index in
+      let env, code = compile_list env instr in
+      let env = env#eat_n_from_stack 2 in
+      ( env,
+        arr_code @ index_code @ unbox @ code
+        @ [ phrase @@ Wa.Call (get_idx assign_func_idx) ] )
   | Expr.If (c, s1, s2) ->
       let env', c_code = compile_list env c in
       let env = env'#reset_stack_depth env in
@@ -352,7 +442,7 @@ let rec compile_list (env : env) ast =
       let env', s2_code = compile_list env' s2 in
       let t =
         if env'#compare_stack_depth env = 0 then Wa.ValBlockType None
-        else Wa.ValBlockType (Some (any_type))
+        else Wa.ValBlockType (Some any_type)
       in
       (env', c_code @ unbox @ [ phrase @@ Wa.If (t, s1_code, s2_code) ])
   | Expr.While (cond, body) ->
@@ -368,8 +458,7 @@ let rec compile_list (env : env) ast =
                    phrase
                    @@ Wa.Loop
                         ( ValBlockType None,
-                          c_code
-                          @ unbox
+                          c_code @ unbox
                           @ [
                               phrase @@ get_test_op Wa.I32Op.Eqz;
                               phrase @@ Wa.BrIf (get_idx 1);
@@ -387,7 +476,8 @@ let rec compile_list (env : env) ast =
           phrase
           @@ Wa.Loop
                ( ValBlockType None,
-                 body_code @ c_code @ unbox @ [ phrase @@ Wa.BrIf (get_idx 0) ] );
+                 body_code @ c_code @ unbox @ [ phrase @@ Wa.BrIf (get_idx 0) ]
+               );
         ] )
   | Expr.Scope (decls, instr) ->
       let env = env#enter_scope in
@@ -401,6 +491,74 @@ let rec compile_list (env : env) ast =
           env
       in
       (env#exit_scope, code)
+  | Expr.String str ->
+      let type_idx, env = env#upsert_type string_type in
+      let data_idx, env = env#upsert_data str in
+      let env = env#put_on_stack in
+      let size = String.length str in
+      let instr = Wa.ArrayNewData (get_idx type_idx, get_idx data_idx) in
+      (env, [ phrase @@ get_const 0; phrase @@ get_const size; phrase @@ instr ])
+  | Expr.Elem (arr, index) ->
+      let block_type_idx, env =
+        env#upsert_type
+          Wt.(
+            RecT
+              [
+                SubT (Final, [], DefFuncT (FuncT ([ any_type ], [ any_type ])));
+              ])
+      in
+      let string_type_idx, env = env#upsert_type string_type in
+      let array_type_idx, env = env#upsert_type array_type in
+      let elem_func_idx, env =
+        env#add_secret_function "elem"
+          (* args: array, index *)
+          (* result: value *)
+          (Wt.FuncT ([ any_type; NumT I32T ], [ any_type ]))
+          0
+          [
+            phrase @@ Wa.LocalGet (get_idx 0);
+            phrase
+            @@ Wa.Block
+                 ( VarBlockType (get_idx block_type_idx),
+                   [
+                     phrase
+                     @@ Wa.BrOnCastFail
+                          (get_idx 0, any_ref_type, ref_type_of string_type_idx);
+                     phrase @@ Wa.LocalGet (get_idx 1);
+                     phrase @@ Wa.ArrayGet (get_idx string_type_idx, Some SX);
+                   ]
+                   @ box
+                   @ [ phrase @@ Wa.Return ] );
+            phrase @@ Wa.RefCast (ref_type_of array_type_idx);
+            phrase @@ Wa.LocalGet (get_idx 1);
+            phrase @@ Wa.ArrayGet (get_idx array_type_idx, None);
+          ]
+      in
+      let env, arr_code = compile_list env arr in
+      let env, index_code = compile_list env index in
+      let env = env#eat_from_stack in
+      ( env,
+        arr_code @ index_code @ unbox
+        @ [ phrase @@ Wa.Call (get_idx elem_func_idx) ] )
+  | Expr.Array elems ->
+      let array_type_idx, env = env#upsert_type array_type in
+      let env, code =
+        List.fold_left
+          (fun (env, acc) elem ->
+            let env, code = compile_list env elem in
+            (env, acc @ code))
+          (env, []) elems
+      in
+      let elems_length = List.length elems in
+      let env = env#eat_n_from_stack elems_length in
+      let env = env#put_on_stack in
+      ( env,
+        code
+        @ [
+            phrase
+            @@ Wa.ArrayNewFixed
+                 (get_idx array_type_idx, Int32.of_int elems_length);
+          ] )
   | _ ->
       report_error
       @@ Printf.sprintf "unsupported structure %s\n" (GT.show Expr.t ast)
@@ -467,6 +625,20 @@ and compile_scope decls instr add_local init_local env =
   let env, code = compile_list env instr in
   (env, locals_init_code @ code)
 
+let add_runtime env =
+  let _, env =
+    env#add_function "length"
+      (Wt.FuncT ([ any_type ], [ any_type ]))
+      0
+      [
+        phrase @@ Wa.LocalGet (get_idx 0);
+        phrase @@ Wa.RefCast (NoNull, ArrayHT);
+        phrase @@ Wa.ArrayLen;
+        phrase @@ Wa.RefI31;
+      ]
+  in
+  env
+
 let compile ast =
   let env = new env in
   match ast with
@@ -475,6 +647,8 @@ let compile ast =
         env#add_function_import "write" (FuncT ([ any_type ], [ any_type ]))
       in
       let _, env = env#add_function_import "read" (FuncT ([], [ any_type ])) in
+
+      let env = add_runtime env in
 
       let env, code =
         compile_scope decls (Expr.Ignore instr)
@@ -492,11 +666,12 @@ let compile ast =
       env#assemble_module
   | _ -> report_error "expected root scope"
 
-let genast _ ((imports, _), p) = compile p
+let genast _ ((_, _), p) = compile p
 
 let build cmd prog =
   let module' = genast cmd prog in
   let oc = open_out (cmd#basename ^ ".wast") in
   Wasm.Print.module_ oc 80 module';
   close_out oc;
+  Wasm.Valid.check_module module';
   cmd#dump_file "wasm" (Wasm.Encode.encode module')
