@@ -6,8 +6,8 @@ const buffer = []
 function readNum() {
     if (buffer.length == 0) {
         const buf = Buffer.alloc(1024)
-        fs.readSync(0, buf)
-        buf.toString().split("\n").forEach(value => {
+        const read = fs.readSync(0, buf)
+        buf.subarray(0, read).toString().trim().split("\n").forEach(value => {
             buffer.push(parseInt(value))
         })
     }
