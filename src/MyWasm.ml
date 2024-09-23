@@ -44,6 +44,20 @@ let sexp_type array_type_idx =
                  ]) );
       ])
 
+let stack_ref_type =
+  Wt.RecT
+    [
+      SubT
+        ( Final,
+          [],
+          DefStructT
+            (StructT
+               [
+                 FieldT (Cons, ValStorageT any_type);
+                 FieldT (Cons, ValStorageT (NumT I32T));
+               ]) );
+    ]
+
 let unbox = [ phrase @@ Wa.RefCast (NoNull, I31HT); phrase @@ Wa.I31Get SX ]
 let box = [ phrase @@ Wa.RefI31 ]
 
@@ -126,6 +140,8 @@ class env =
     val secret_scope = M.empty
     val temp_locals = []
     val stack_depth = 0
+    val is_collecting_refs = false
+    val refs = []
 
     method upsert_type t =
       let type_idx, types = upsert t types in
@@ -250,6 +266,16 @@ class env =
     method reset_stack_depth (other_env : env) =
       {<stack_depth = other_env#get_stack_depth_>}
 
+    method start_collecting_refs = {<is_collecting_refs = true>}
+
+    method stop_collecting_refs =
+      (refs, {<is_collecting_refs = false; refs = []>})
+
+    method add_ref (ref : w_value) =
+      if not is_collecting_refs then
+        report_error "tried to take ref outside of assignment operator"
+      else (List.length refs, {<refs = refs @ [ ref ]>})
+
     method assemble_module =
       let types = List.map phrase types in
       let imports =
@@ -314,7 +340,7 @@ class env =
         Wa.{ empty_module with imports; funcs; types; globals; exports; datas }
   end
 
-let ensure_elem_exists env =
+let add_secret_elem (env : env) =
   let block_type_idx, env =
     env#upsert_type
       Wt.(
@@ -323,44 +349,94 @@ let ensure_elem_exists env =
   let string_type_idx, env = env#upsert_type string_type in
   let array_type_idx, env = env#upsert_type array_type in
   let sexp_type_idx, env = env#upsert_type (sexp_type array_type_idx) in
-  let elem_func_idx, env =
-    env#add_secret_function "elem"
-      (* args: array, index *)
-      (* result: value *)
-      (Wt.FuncT ([ any_type; NumT I32T ], [ any_type ]))
-      0
-      [
-        phrase @@ Wa.LocalGet (get_idx 0);
-        phrase
-        @@ Wa.Block
-             ( VarBlockType (get_idx block_type_idx),
-               [
-                 phrase
-                 @@ Wa.BrOnCastFail
-                      (get_idx 0, any_ref_type, ref_type_of sexp_type_idx);
-                 phrase @@ Wa.StructGet (get_idx sexp_type_idx, get_idx 1, None);
-                 phrase @@ Wa.LocalGet (get_idx 1);
-                 phrase @@ Wa.ArrayGet (get_idx array_type_idx, None);
+  env#add_secret_function "elem"
+    (* args: array, index *)
+    (* result: value *)
+    (Wt.FuncT ([ any_type; NumT I32T ], [ any_type ]))
+    0
+    [
+      phrase @@ Wa.LocalGet (get_idx 0);
+      phrase
+      @@ Wa.Block
+           ( VarBlockType (get_idx block_type_idx),
+             [
+               phrase
+               @@ Wa.BrOnCastFail
+                    (get_idx 0, any_ref_type, ref_type_of sexp_type_idx);
+               phrase @@ Wa.StructGet (get_idx sexp_type_idx, get_idx 1, None);
+               phrase @@ Wa.LocalGet (get_idx 1);
+               phrase @@ Wa.ArrayGet (get_idx array_type_idx, None);
+               phrase @@ Wa.Return;
+             ] );
+      phrase
+      @@ Wa.Block
+           ( VarBlockType (get_idx block_type_idx),
+             [
+               phrase
+               @@ Wa.BrOnCastFail
+                    (get_idx 0, any_ref_type, ref_type_of string_type_idx);
+               phrase @@ Wa.LocalGet (get_idx 1);
+               phrase @@ Wa.ArrayGet (get_idx string_type_idx, Some SX);
+             ]
+             @ box
+             @ [ phrase @@ Wa.Return ] );
+      phrase @@ Wa.RefCast (ref_type_of array_type_idx);
+      phrase @@ Wa.LocalGet (get_idx 1);
+      phrase @@ Wa.ArrayGet (get_idx array_type_idx, None);
+    ]
+
+let add_secret_assign (env : env) =
+  let block_type_idx, env =
+    env#upsert_type
+      Wt.(
+        RecT [ SubT (Final, [], DefFuncT (FuncT ([ any_type ], [ any_type ]))) ])
+  in
+  let string_type_idx, env = env#upsert_type string_type in
+  let array_type_idx, env = env#upsert_type array_type in
+  let sexp_type_idx, env = env#upsert_type (sexp_type array_type_idx) in
+  env#add_secret_function "assign"
+    (* args: array, index, value *)
+    (* result: value *)
+    (Wt.FuncT ([ any_type; NumT I32T; any_type ], [ any_type ]))
+    0
+    [
+      phrase @@ Wa.LocalGet (get_idx 0);
+      phrase
+      @@ Wa.Block
+           ( VarBlockType (get_idx block_type_idx),
+             [
+               phrase
+               @@ Wa.BrOnCastFail
+                    (get_idx 0, any_ref_type, ref_type_of sexp_type_idx);
+               phrase @@ Wa.StructGet (get_idx sexp_type_idx, get_idx 1, None);
+               phrase @@ Wa.LocalGet (get_idx 1);
+               phrase @@ Wa.LocalGet (get_idx 2);
+               phrase @@ Wa.ArraySet (get_idx array_type_idx);
+               phrase @@ Wa.LocalGet (get_idx 2);
+               phrase @@ Wa.Return;
+             ] );
+      phrase
+      @@ Wa.Block
+           ( VarBlockType (get_idx block_type_idx),
+             [
+               phrase
+               @@ Wa.BrOnCastFail
+                    (get_idx 0, any_ref_type, ref_type_of string_type_idx);
+               phrase @@ Wa.LocalGet (get_idx 1);
+               phrase @@ Wa.LocalGet (get_idx 2);
+             ]
+             @ unbox
+             @ [
+                 phrase @@ Wa.ArraySet (get_idx string_type_idx);
+                 phrase @@ Wa.LocalGet (get_idx 2);
                  phrase @@ Wa.Return;
                ] );
-        phrase
-        @@ Wa.Block
-             ( VarBlockType (get_idx block_type_idx),
-               [
-                 phrase
-                 @@ Wa.BrOnCastFail
-                      (get_idx 0, any_ref_type, ref_type_of string_type_idx);
-                 phrase @@ Wa.LocalGet (get_idx 1);
-                 phrase @@ Wa.ArrayGet (get_idx string_type_idx, Some SX);
-               ]
-               @ box
-               @ [ phrase @@ Wa.Return ] );
-        phrase @@ Wa.RefCast (ref_type_of array_type_idx);
-        phrase @@ Wa.LocalGet (get_idx 1);
-        phrase @@ Wa.ArrayGet (get_idx array_type_idx, None);
-      ]
-  in
-  (elem_func_idx, env)
+      phrase @@ Wa.RefCast (ref_type_of array_type_idx);
+      phrase @@ Wa.LocalGet (get_idx 1);
+      phrase @@ Wa.LocalGet (get_idx 2);
+      phrase @@ Wa.ArraySet (get_idx array_type_idx);
+      phrase @@ Wa.LocalGet (get_idx 2);
+    ]
 
 let rec compile_list (env : env) ast =
   match ast with
@@ -471,63 +547,7 @@ let rec compile_list (env : env) ast =
           @@ Printf.sprintf "trying to set, var with name \"%s\" not found" name
       )
   | Expr.Assign (Expr.ElemRef (arr, index), instr) ->
-      let block_type_idx, env =
-        env#upsert_type
-          Wt.(
-            RecT
-              [
-                SubT (Final, [], DefFuncT (FuncT ([ any_type ], [ any_type ])));
-              ])
-      in
-      let string_type_idx, env = env#upsert_type string_type in
-      let array_type_idx, env = env#upsert_type array_type in
-      let sexp_type_idx, env = env#upsert_type (sexp_type array_type_idx) in
-      let assign_func_idx, env =
-        env#add_secret_function "assign"
-          (* args: array, index, value *)
-          (* result: value *)
-          (Wt.FuncT ([ any_type; NumT I32T; any_type ], [ any_type ]))
-          0
-          [
-            phrase @@ Wa.LocalGet (get_idx 0);
-            phrase
-            @@ Wa.Block
-                 ( VarBlockType (get_idx block_type_idx),
-                   [
-                     phrase
-                     @@ Wa.BrOnCastFail
-                          (get_idx 0, any_ref_type, ref_type_of sexp_type_idx);
-                     phrase
-                     @@ Wa.StructGet (get_idx sexp_type_idx, get_idx 1, None);
-                     phrase @@ Wa.LocalGet (get_idx 1);
-                     phrase @@ Wa.LocalGet (get_idx 2);
-                     phrase @@ Wa.ArraySet (get_idx array_type_idx);
-                     phrase @@ Wa.LocalGet (get_idx 2);
-                     phrase @@ Wa.Return;
-                   ] );
-            phrase
-            @@ Wa.Block
-                 ( VarBlockType (get_idx block_type_idx),
-                   [
-                     phrase
-                     @@ Wa.BrOnCastFail
-                          (get_idx 0, any_ref_type, ref_type_of string_type_idx);
-                     phrase @@ Wa.LocalGet (get_idx 1);
-                     phrase @@ Wa.LocalGet (get_idx 2);
-                   ]
-                   @ unbox
-                   @ [
-                       phrase @@ Wa.ArraySet (get_idx string_type_idx);
-                       phrase @@ Wa.LocalGet (get_idx 2);
-                       phrase @@ Wa.Return;
-                     ] );
-            phrase @@ Wa.RefCast (ref_type_of array_type_idx);
-            phrase @@ Wa.LocalGet (get_idx 1);
-            phrase @@ Wa.LocalGet (get_idx 2);
-            phrase @@ Wa.ArraySet (get_idx array_type_idx);
-            phrase @@ Wa.LocalGet (get_idx 2);
-          ]
-      in
+      let assign_func_idx, env = add_secret_assign env in
       let env, arr_code = compile_list env arr in
       let env, index_code = compile_list env index in
       let env, code = compile_list env instr in
@@ -535,12 +555,107 @@ let rec compile_list (env : env) ast =
       ( env,
         arr_code @ index_code @ unbox @ code
         @ [ phrase @@ Wa.Call (get_idx assign_func_idx) ] )
+  | Expr.Assign (ref, value) ->
+      let env = env#start_collecting_refs in
+      let env, ref_code = compile_list env ref in
+      let refs, env = env#stop_collecting_refs in
+      let env = env#eat_from_stack in
+      let env, value_code = compile_list env value in
+      let assign_func_idx, env = add_secret_assign env in
+      let temp_locals, env = env#get_temp_locals 2 in
+      let type_idx, env = env#upsert_type stack_ref_type in
+      let block_type_idx, env =
+        env#upsert_type
+          Wt.(RecT [ SubT (Final, [], DefFuncT (FuncT ([ any_type ], []))) ])
+      in
+      let ref_temp = List.hd temp_locals in
+      let value_temp = List.nth temp_locals 1 in
+      let refs_code =
+        refs
+        |> List.mapi (fun i r ->
+               [ phrase @@ Wa.LocalGet (get_idx ref_temp) ]
+               @ unbox
+               @ [
+                   phrase @@ get_const i;
+                   phrase @@ get_compare Wa.I32Op.Eq;
+                   phrase
+                   @@ Wa.If
+                        ( ValBlockType None,
+                          [ phrase @@ Wa.LocalGet (get_idx value_temp) ]
+                          @ (match r with
+                            | Global idx ->
+                                [ phrase @@ Wa.GlobalSet (get_idx idx) ]
+                            | Local idx ->
+                                [ phrase @@ Wa.LocalSet (get_idx idx) ]
+                            | _ ->
+                                report_error
+                                  "cannot assign to ref which is not global or \
+                                   local")
+                          @ [ phrase @@ Wa.Br (get_idx 1) ],
+                          [] );
+                 ])
+        |> List.flatten
+      in
+      ( env,
+        ref_code
+        @ [ phrase @@ Wa.LocalSet (get_idx ref_temp) ]
+        @ value_code
+        @ [
+            phrase @@ Wa.LocalSet (get_idx value_temp);
+            phrase @@ Wa.LocalGet (get_idx ref_temp);
+            phrase @@ Wa.RefCast (ref_type_of type_idx);
+            phrase @@ Wa.StructGet (get_idx type_idx, get_idx 0, None);
+            phrase @@ Wa.LocalGet (get_idx ref_temp);
+            phrase @@ Wa.RefCast (ref_type_of type_idx);
+            phrase @@ Wa.StructGet (get_idx type_idx, get_idx 1, None);
+            phrase @@ get_const ~-0xbeef;
+            phrase @@ get_compare Wa.I32Op.Eq;
+            phrase
+            @@ Wa.If
+                 ( VarBlockType (get_idx block_type_idx),
+                   [ phrase @@ Wa.LocalSet (get_idx ref_temp) ] @ refs_code,
+                   [
+                     phrase @@ Wa.LocalGet (get_idx ref_temp);
+                     phrase @@ Wa.RefCast (ref_type_of type_idx);
+                     phrase @@ Wa.StructGet (get_idx type_idx, get_idx 1, None);
+                     phrase @@ Wa.LocalGet (get_idx value_temp);
+                     phrase @@ Wa.Call (get_idx assign_func_idx);
+                     phrase @@ Wa.Drop;
+                   ] );
+            phrase @@ Wa.LocalGet (get_idx value_temp);
+          ] )
+  | Expr.Ref name ->
+      let ref =
+        match env#get name with
+        | Some l -> l
+        | _ ->
+            report_error
+            @@ Printf.sprintf
+                 "trying to get ref, var with name \"%s\" not found" name
+      in
+      let ref_num, env = env#add_ref ref in
+      let type_idx, env = env#upsert_type stack_ref_type in
+      let env = env#put_on_stack in
+      ( env,
+        [ phrase @@ get_const ref_num ]
+        @ box
+        @ [
+            phrase @@ get_const ~-0xbeef;
+            phrase @@ Wa.StructNew (get_idx type_idx, Explicit);
+          ] )
+  | Expr.ElemRef (arr, index) ->
+      let env, array_code = compile_list env arr in
+      let env, index_code = compile_list env index in
+      let type_idx, env = env#upsert_type stack_ref_type in
+      ( env,
+        array_code @ index_code @ unbox
+        @ [ phrase @@ Wa.StructNew (get_idx type_idx, Explicit) ] )
   | Expr.If (c, s1, s2) ->
-      let env', c_code = compile_list env c in
-      let env = env'#reset_stack_depth env in
+      let env, c_code = compile_list env c in
+      let env = env#eat_from_stack in
       let env', s1_code = compile_list env s1 in
       let env = env'#reset_stack_depth env in
-      let env', s2_code = compile_list env' s2 in
+      let env', s2_code = compile_list env s2 in
       let t =
         if env'#compare_stack_depth env = 0 then Wa.ValBlockType None
         else Wa.ValBlockType (Some any_type)
@@ -600,7 +715,7 @@ let rec compile_list (env : env) ast =
       let instr = Wa.ArrayNewData (get_idx type_idx, get_idx data_idx) in
       (env, [ phrase @@ get_const 0; phrase @@ get_const size; phrase @@ instr ])
   | Expr.Elem (arr, index) ->
-      let elem_func_idx, env = ensure_elem_exists env in
+      let elem_func_idx, env = add_secret_elem env in
       let env, arr_code = compile_list env arr in
       let env, index_code = compile_list env index in
       let env = env#eat_from_stack in
@@ -655,7 +770,7 @@ let rec compile_list (env : env) ast =
       let temp_locals, env = env#get_temp_locals 1 in
       let value_temp = List.hd temp_locals in
       let env = env#eat_from_stack in
-      let elem_func_idx, env = ensure_elem_exists env in
+      let elem_func_idx, env = add_secret_elem env in
       let rec compile_pattern env pattern path =
         let elem_code =
           [ phrase @@ Wa.LocalGet (get_idx value_temp) ]
@@ -753,7 +868,8 @@ let rec compile_list (env : env) ast =
                      ))
                    (env, []) bindings
                in
-               let env, block_code = compile_list env e in
+               let env', block_code = compile_list env e in
+               let env = env'#reset_stack_depth env in
                let block =
                  phrase
                  @@ Wa.Block
@@ -764,15 +880,17 @@ let rec compile_list (env : env) ast =
                (env#exit_scope, blocks @ [ block ]))
              (env, [])
       in
+      let env, t =
+        match attr with
+        | Void -> (env, None)
+        | _ -> (env#put_on_stack, Some any_type)
+      in
       ( env,
         value_code
         @ [
             phrase @@ Wa.LocalSet (get_idx value_temp);
             phrase
-            @@ Wa.Block
-                 ( ValBlockType
-                     (match attr with Void -> None | _ -> Some any_type),
-                   blocks @ [ phrase @@ Wa.Unreachable ] );
+            @@ Wa.Block (ValBlockType t, blocks @ [ phrase @@ Wa.Unreachable ]);
           ] )
   | _ ->
       report_error
