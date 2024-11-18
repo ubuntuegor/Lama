@@ -380,7 +380,7 @@ module Expr =
     (* assignment                 *) | Assign    of t * t
     (* composition                *) | Seq       of t * t
     (* empty statement            *) | Skip
-    (* conditional                *) | If        of t * t * t
+    (* conditional                *) | If        of t * t * t * atr
     (* loop with a pre-condition  *) | While     of t * t
     (* loop with a post-condition *) | DoWhile   of t * t
     (* pattern-matching           *) | Case      of t * (Pattern.t * t) list * Loc.t * atr
@@ -536,7 +536,7 @@ module Expr =
          eval conf (seq s2 k) s1
       | Skip ->
          (match k with Skip -> conf | _ -> eval conf Skip k)
-      | If (e, s1, s2) ->
+      | If (e, s1, s2, _) ->
          eval conf k (schedule_list [e; Control (function (st, i, o, e::vs) -> (if Value.to_int e <> 0 then s1 else s2), (st, i, o, vs) | _ -> failwith (Printf.sprintf "Unexpected pattern: %s: %d" __FILE__ __LINE__))])
       | While (e, s) ->
          eval conf k (schedule_list [e; Control (function (st, i, o, e::vs) -> (if Value.to_int e <> 0 then seq s expr else Skip), (st, i, o, vs) | _ -> failwith (Printf.sprintf "Unexpected pattern: %s: %d" __FILE__ __LINE__))])
@@ -753,7 +753,7 @@ module Expr =
       | %"if" e:parse[infix][Val] %"then" the:scope[infix][atr]
         elif:(%"elif" parse[infix][Val] %"then" scope[infix][atr])*
         els:("else" s:scope[infix][atr] {Some s} | {isVoid atr} => empty {None}) %"fi"
-          {If (e, the, List.fold_right (fun (e, t) elif -> If (e, t, elif)) elif (match els with Some e -> e | _ -> materialize atr Skip))}
+          {If (e, the, List.fold_right (fun (e, t) elif -> If (e, t, elif, atr)) elif (match els with Some e -> e | _ -> materialize atr Skip), atr)}
       | %"while" e:parse[infix][Val] %"do" s:scope[infix][Void]
                                             => {isVoid atr} => %"od" {materialize atr (While (e, s))}
 

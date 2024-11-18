@@ -1495,7 +1495,7 @@ let compile cmd ((imports, _), p) =
         (*Expr.ElemRef _ -> STA | _ -> STI]*)
     | Expr.Skip -> (env, false, [])
     | Expr.Seq (s1, s2) -> compile_list tail l env [ s1; s2 ]
-    | Expr.If (c, s1, s2) ->
+    | Expr.If (c, s1, s2, _) ->
         let le, env = env#get_label in
         let l2, env = env#get_label in
         let env, fe, se = compile_expr false le env c in

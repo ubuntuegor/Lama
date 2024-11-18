@@ -139,7 +139,6 @@ class env =
     val scopes = new lexical_scopes
     val secret_scope = M.empty
     val temp_locals = []
-    val stack_depth = 0
     val is_collecting_refs = false
     val refs = []
 
@@ -243,28 +242,16 @@ class env =
     method enter_function =
       {<scopes = scopes#enter_function
        ; locals = 0
-       ; temp_locals = []
-       ; stack_depth = 0>}
+       ; temp_locals = []>}
 
     method exit_function (old_env : env) =
       {<scopes = old_env#get_scopes_
        ; locals = old_env#get_locals_count
-       ; temp_locals = fst (old_env#get_temp_locals 0)
-       ; stack_depth = old_env#get_stack_depth_>}
+       ; temp_locals = fst (old_env#get_temp_locals 0)>}
 
     method enter_scope = {<scopes = scopes#enter_scope>}
     method exit_scope = {<scopes = scopes#exit_scope>}
     method get_locals_count = locals
-    method put_on_stack = {<stack_depth = stack_depth + 1>}
-    method eat_from_stack = {<stack_depth = stack_depth - 1>}
-    method eat_n_from_stack n = {<stack_depth = stack_depth - n>}
-    method get_stack_depth_ = stack_depth
-
-    method compare_stack_depth (other_env : env) =
-      stack_depth - other_env#get_stack_depth_
-
-    method reset_stack_depth (other_env : env) =
-      {<stack_depth = other_env#get_stack_depth_>}
 
     method start_collecting_refs = {<is_collecting_refs = true>}
 
@@ -452,8 +439,6 @@ let rec compile_list (env : env) ast =
                     (env, acc @ code))
                   (env, []) args
               in
-              let env = env#eat_n_from_stack @@ List.length args in
-              let env = env#put_on_stack in
               (env, code @ [ phrase @@ Wa.Call (get_idx func_idx) ])
           | _ ->
               report_error
@@ -464,7 +449,6 @@ let rec compile_list (env : env) ast =
   | Expr.Binop (op, lhs, rhs) ->
       let env, lhscode = compile_list env lhs in
       let env, rhscode = compile_list env rhs in
-      let env = env#eat_from_stack in
       let env, opcode =
         match op with
         | "+" -> (env, [ phrase @@ get_binary Wa.I32Op.Add ])
@@ -511,7 +495,7 @@ let rec compile_list (env : env) ast =
         | _ -> report_error @@ Printf.sprintf "unsupported binop %s\n" op
       in
       (env, lhscode @ unbox @ rhscode @ unbox @ opcode @ box)
-  | Expr.Const i -> (env#put_on_stack, [ phrase @@ get_const i ] @ box)
+  | Expr.Const i -> (env, [ phrase @@ get_const i ] @ box)
   | Expr.Skip -> (env, [])
   | Expr.Seq (s1, s2) ->
       let env, code1 = compile_list env s1 in
@@ -519,13 +503,13 @@ let rec compile_list (env : env) ast =
       (env, code1 @ code2)
   | Expr.Ignore s ->
       let env, code = compile_list env s in
-      (env#eat_from_stack, code @ [ phrase Wa.Drop ])
+      (env, code @ [ phrase Wa.Drop ])
   | Expr.Var name -> (
       match env#get name with
       | Some (Global index) ->
-          (env#put_on_stack, [ phrase @@ Wa.GlobalGet (get_idx index) ])
+          (env, [ phrase @@ Wa.GlobalGet (get_idx index) ])
       | Some (Local index) ->
-          (env#put_on_stack, [ phrase @@ Wa.LocalGet (get_idx index) ])
+          (env, [ phrase @@ Wa.LocalGet (get_idx index) ])
       | _ ->
           report_error
           @@ Printf.sprintf "trying to get, var with name \"%s\" not found" name
@@ -551,7 +535,6 @@ let rec compile_list (env : env) ast =
       let env, arr_code = compile_list env arr in
       let env, index_code = compile_list env index in
       let env, code = compile_list env instr in
-      let env = env#eat_n_from_stack 2 in
       ( env,
         arr_code @ index_code @ unbox @ code
         @ [ phrase @@ Wa.Call (get_idx assign_func_idx) ] )
@@ -559,7 +542,6 @@ let rec compile_list (env : env) ast =
       let env = env#start_collecting_refs in
       let env, ref_code = compile_list env ref in
       let refs, env = env#stop_collecting_refs in
-      let env = env#eat_from_stack in
       let env, value_code = compile_list env value in
       let assign_func_idx, env = add_secret_assign env in
       let temp_locals, env = env#get_temp_locals 2 in
@@ -635,7 +617,6 @@ let rec compile_list (env : env) ast =
       in
       let ref_num, env = env#add_ref ref in
       let type_idx, env = env#upsert_type stack_ref_type in
-      let env = env#put_on_stack in
       ( env,
         [ phrase @@ get_const ref_num ]
         @ box
@@ -650,20 +631,18 @@ let rec compile_list (env : env) ast =
       ( env,
         array_code @ index_code @ unbox
         @ [ phrase @@ Wa.StructNew (get_idx type_idx, Explicit) ] )
-  | Expr.If (c, s1, s2) ->
+  | Expr.If (c, s1, s2, atr) ->
       let env, c_code = compile_list env c in
-      let env = env#eat_from_stack in
-      let env', s1_code = compile_list env s1 in
-      let env = env'#reset_stack_depth env in
-      let env', s2_code = compile_list env s2 in
+      let env, s1_code = compile_list env s1 in
+      let env, s2_code = compile_list env s2 in
       let t =
-        if env'#compare_stack_depth env = 0 then Wa.ValBlockType None
-        else Wa.ValBlockType (Some any_type)
+        match atr with
+        | Void -> Wa.ValBlockType None
+        | _ -> Wa.ValBlockType (Some any_type)
       in
-      (env', c_code @ unbox @ [ phrase @@ Wa.If (t, s1_code, s2_code) ])
+      (env, c_code @ unbox @ [ phrase @@ Wa.If (t, s1_code, s2_code) ])
   | Expr.While (cond, body) ->
-      let env', c_code = compile_list env cond in
-      let env = env'#reset_stack_depth env in
+      let env, c_code = compile_list env cond in
       let env, body_code = compile_list env body in
       ( env,
         [
@@ -685,8 +664,7 @@ let rec compile_list (env : env) ast =
         ] )
   | Expr.DoWhile (body, cond) ->
       let env, body_code = compile_list env body in
-      let env', c_code = compile_list env cond in
-      let env = env'#reset_stack_depth env in
+      let env, c_code = compile_list env cond in
       ( env,
         [
           phrase
@@ -710,7 +688,6 @@ let rec compile_list (env : env) ast =
   | Expr.String str ->
       let type_idx, env = env#upsert_type string_type in
       let data_idx, env = env#upsert_data str in
-      let env = env#put_on_stack in
       let size = String.length str in
       let instr = Wa.ArrayNewData (get_idx type_idx, get_idx data_idx) in
       (env, [ phrase @@ get_const 0; phrase @@ get_const size; phrase @@ instr ])
@@ -718,7 +695,6 @@ let rec compile_list (env : env) ast =
       let elem_func_idx, env = add_secret_elem env in
       let env, arr_code = compile_list env arr in
       let env, index_code = compile_list env index in
-      let env = env#eat_from_stack in
       ( env,
         arr_code @ index_code @ unbox
         @ [ phrase @@ Wa.Call (get_idx elem_func_idx) ] )
@@ -732,8 +708,6 @@ let rec compile_list (env : env) ast =
           (env, []) elems
       in
       let elems_length = List.length elems in
-      let env = env#eat_n_from_stack elems_length in
-      let env = env#put_on_stack in
       ( env,
         code
         @ [
@@ -745,7 +719,6 @@ let rec compile_list (env : env) ast =
       let hash_value = hash tag in
       let array_type_idx, env = env#upsert_type array_type in
       let sexp_type_idx, env = env#upsert_type (sexp_type array_type_idx) in
-      let env = env#put_on_stack in
       let env, vals_code =
         List.fold_left
           (fun (env, acc) elem ->
@@ -754,8 +727,6 @@ let rec compile_list (env : env) ast =
           (env, []) vals
       in
       let vals_length = List.length vals in
-      let env = env#eat_n_from_stack (vals_length + 1) in
-      let env = env#put_on_stack in
       ( env,
         [ phrase @@ get_const hash_value ]
         @ vals_code
@@ -769,7 +740,6 @@ let rec compile_list (env : env) ast =
       let env, value_code = compile_list env value in
       let temp_locals, env = env#get_temp_locals 1 in
       let value_temp = List.hd temp_locals in
-      let env = env#eat_from_stack in
       let elem_func_idx, env = add_secret_elem env in
       let rec compile_pattern env pattern path =
         let elem_code =
@@ -868,8 +838,7 @@ let rec compile_list (env : env) ast =
                      ))
                    (env, []) bindings
                in
-               let env', block_code = compile_list env e in
-               let env = env'#reset_stack_depth env in
+               let env, block_code = compile_list env e in
                let block =
                  phrase
                  @@ Wa.Block
@@ -883,7 +852,7 @@ let rec compile_list (env : env) ast =
       let env, t =
         match attr with
         | Void -> (env, None)
-        | _ -> (env#put_on_stack, Some any_type)
+        | _ -> (env, Some any_type)
       in
       ( env,
         value_code
@@ -947,7 +916,7 @@ and compile_scope decls instr add_local init_local env =
     List.fold_left
       (fun (env, acc) (name, instr) ->
         let env, code = compile_list env instr in
-        (env#eat_from_stack, acc @ code @ [ init_local env name ]))
+        (env, acc @ code @ [ init_local env name ]))
       (env, [])
       (List.filter_map
          (fun (name, init) ->

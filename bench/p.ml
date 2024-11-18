@@ -73,7 +73,7 @@ METH(Seq, ppf, l r, Seq (l,r), [[Format.fprintf ppf "@[<v>%a;@ %a@]" fself l fse
 
 METH(Skip, ppf, , Skip, [[ Format.fprintf ppf "skip" ]])
 
-METH(If, ppf, c th el, If (c,th,el), [[
+METH(If, ppf, c th el _, If (c,th,el, _), [[
 Format.fprintf ppf "@[if %a then @[<v 2>{@,%a@]@ @[<v 2>} else {@,%a@]@ } fi@]"
   fself c fself th fself el]])
 
