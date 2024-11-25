@@ -100,337 +100,402 @@ let rec get_last = function
   | x :: [] -> x
   | _ :: xs -> get_last xs
 
+let rec get_last_2 = function
+  | [] -> raise (Failure "not expected empty list in get_last_2")
+  | _ :: [] -> raise (Failure "not expected list of 1 element in get_last_2")
+  | [ x; y ] -> [ x; y ]
+  | _ :: xs -> get_last_2 xs
+
 let rec replace idx value = function
   | [] -> raise (Failure "length exceeded in replace")
   | x :: xs -> if idx = 0 then value :: xs else x :: replace (idx - 1) value xs
 
-class lexical_scopes =
-  object
-    val scopes : w_value M.t list = [ M.empty ]
+(* result is append only, not dependent on compilation state *)
+module Result = struct
+  type t = {
+    types : Wt.rec_type list;
+    functions : w_func list;
+    datas : string list;
+    globals : int;
+    exports : w_export list;
+    helpers : int M.t;
+    all_locals : int;
+  }
 
-    method add name v =
-      if M.mem name (List.hd scopes) then
-        report_error @@ Printf.sprintf "name \"%s\" is already defined" name
-      else {<scopes = M.add name v (List.hd scopes) :: List.tl scopes>}
+  let empty =
+    {
+      types = [];
+      functions = [];
+      datas = [];
+      globals = 0;
+      exports = [];
+      helpers = M.empty;
+      all_locals = 0;
+    }
 
-    method get name =
-      let rec inner name = function
-        | [] -> None
-        | x :: xs -> (
-            match M.find_opt name x with
-            | None -> inner name xs
-            | found -> found)
-      in
-      inner name scopes
+  let upsert_type t result =
+    let type_idx, types = upsert t result.types in
+    (type_idx, { result with types })
 
-    method enter_function = {<scopes = [ get_last scopes ]>}
-    method enter_scope = {<scopes = M.empty :: scopes>}
-    method exit_scope = {<scopes = List.tl scopes>}
-  end
-
-class env =
-  object (self)
-    val types = []
-    val functions = []
-    val datas = []
-    val globals = 0
-    val locals = 0
-    val exports = []
-    val scopes = new lexical_scopes
-    val secret_scope = M.empty
-    val temp_locals = []
-    val is_collecting_refs = false
-    val refs = []
-
-    method upsert_type t =
-      let type_idx, types = upsert t types in
-      (type_idx, {<types>})
-
-    method add_function_import name t =
-      if is_last (function ImportFunc (_, _) -> false | _ -> true) functions
-      then report_error "all imports should be added before other functions"
-      else
-        let type_idx, types =
-          upsert Wt.(RecT [ SubT (Final, [], DefFuncT t) ]) types
-        in
-        let func_idx = List.length functions in
-        ( func_idx,
-          {<types
-           ; functions = functions @ [ ImportFunc (name, type_idx) ]
-           ; scopes = scopes#add name (Callable func_idx)>} )
-
-    method allocate_functions names =
-      let _, scopes =
-        List.fold_left
-          (fun (idx, scopes) name -> (idx + 1, scopes#add name (Callable idx)))
-          (List.length functions, scopes)
-          names
-      in
-      let functions = functions @ List.map (fun _ -> Func (0, 0, [])) names in
-      {<scopes; functions>}
-
-    method place_function name t locals_count body =
+  let add_function_import name t result =
+    if
+      is_last
+        (function ImportFunc (_, _) -> false | _ -> true)
+        result.functions
+    then report_error "all imports should be added before other functions"
+    else
       let type_idx, types =
-        upsert Wt.(RecT [ SubT (Final, [], DefFuncT t) ]) types
+        upsert Wt.(RecT [ SubT (Final, [], DefFuncT t) ]) result.types
       in
-      let func_idx =
-        match self#get name with
-        | Some (Callable x) -> x
-        | _ ->
-            report_error
-            @@ Printf.sprintf "function \"%s\" not allocated before placement"
-                 name
-      in
-      {<types
-       ; functions = replace func_idx
-                       (Func (type_idx, locals_count, body))
-                       functions>}
+      let func_idx = List.length result.functions in
+      let functions = result.functions @ [ ImportFunc (name, type_idx) ] in
+      (func_idx, { result with types; functions })
 
-    method add_function name t locals_count body =
-      let type_idx, types =
-        upsert Wt.(RecT [ SubT (Final, [], DefFuncT t) ]) types
-      in
-      let func_idx = List.length functions in
-      ( func_idx,
-        {<types
-         ; functions = functions @ [ Func (type_idx, locals_count, body) ]
-         ; scopes = scopes#add name (Callable func_idx)>} )
+  let add_function t locals_count body result =
+    let type_idx, types =
+      upsert Wt.(RecT [ SubT (Final, [], DefFuncT t) ]) result.types
+    in
+    let func_idx = List.length result.functions in
+    let functions =
+      result.functions @ [ Func (type_idx, locals_count, body) ]
+    in
+    (func_idx, { result with types; functions })
 
-    method add_secret_function name t locals_count body =
-      match M.find_opt name secret_scope with
-      | None ->
-          let type_idx, types =
-            upsert Wt.(RecT [ SubT (Final, [], DefFuncT t) ]) types
-          in
-          let func_idx = List.length functions in
-          ( func_idx,
-            {<types
-             ; functions = functions @ [ Func (type_idx, locals_count, body) ]
-             ; secret_scope = M.add name func_idx secret_scope>} )
-      | Some func_idx -> (func_idx, self)
+  let allocate_functions n result =
+    let start_idx = List.length result.functions in
+    let functions = result.functions @ List.init n (fun _ -> Func (0, 0, [])) in
+    (start_idx, { result with functions })
 
-    method export_function name =
-      match scopes#get name with
-      | Some (Callable func_idx) ->
-          {<exports = ExportFunc (name, func_idx) :: exports>}
-      | _ ->
-          report_error
-          @@ Printf.sprintf "cannot export \"%s\" because it's not a function"
-               name
+  let place_function idx t locals_count body result =
+    let type_idx, types =
+      upsert Wt.(RecT [ SubT (Final, [], DefFuncT t) ]) result.types
+    in
+    let functions =
+      replace idx (Func (type_idx, locals_count, body)) result.functions
+    in
+    { result with types; functions }
 
-    method add_global name =
-      ( globals,
-        {<globals = globals + 1; scopes = scopes#add name (Global globals)>} )
+  let upsert_helper name t locals_count body result =
+    match M.find_opt name result.helpers with
+    | None ->
+        let func_idx, result = add_function t locals_count body result in
+        let helpers = M.add name func_idx result.helpers in
+        (func_idx, { result with helpers })
+    | Some func_idx -> (func_idx, result)
 
-    method add_local name =
-      (locals, {<locals = locals + 1; scopes = scopes#add name (Local locals)>})
+  let export_function name idx result =
+    let exports = ExportFunc (name, idx) :: result.exports in
+    { result with exports }
 
-    method get_temp_locals amount =
-      let locals_to_add = max (amount - List.length temp_locals) 0 in
-      let temp_locals =
-        temp_locals @ List.init locals_to_add (fun i -> locals + i)
-      in
-      (temp_locals, {<temp_locals; locals = locals + locals_to_add>})
+  let add_global result =
+    (result.globals, { result with globals = result.globals + 1 })
 
-    method upsert_data str =
-      let data_idx, datas = upsert str datas in
-      (data_idx, {<datas>})
+  let upsert_data str result =
+    let data_idx, datas = upsert str result.datas in
+    (data_idx, { result with datas })
 
-    method get_scopes_ = scopes
-    method get name = scopes#get name
-
-    method enter_function =
-      {<scopes = scopes#enter_function
-       ; locals = 0
-       ; temp_locals = []>}
-
-    method exit_function (old_env : env) =
-      {<scopes = old_env#get_scopes_
-       ; locals = old_env#get_locals_count
-       ; temp_locals = fst (old_env#get_temp_locals 0)>}
-
-    method enter_scope = {<scopes = scopes#enter_scope>}
-    method exit_scope = {<scopes = scopes#exit_scope>}
-    method get_locals_count = locals
-
-    method start_collecting_refs = {<is_collecting_refs = true>}
-
-    method stop_collecting_refs =
-      (refs, {<is_collecting_refs = false; refs = []>})
-
-    method add_ref (ref : w_value) =
-      if not is_collecting_refs then
-        report_error "tried to take ref outside of assignment operator"
-      else (List.length refs, {<refs = refs @ [ ref ]>})
-
-    method assemble_module =
-      let types = List.map phrase types in
-      let imports =
-        List.filter_map
-          (function
-            | ImportFunc (name, type_idx) ->
-                Some
-                  (phrase
-                  @@ Wa.
-                       {
-                         module_name = decode_s "lama";
-                         item_name = decode_s name;
-                         idesc = phrase @@ Wa.FuncImport (get_idx type_idx);
-                       })
-            | _ -> None)
-          functions
-      in
-      let funcs =
-        List.filter_map
-          (function
-            | Func (type_idx, locals_count, body) ->
-                Some
-                  (phrase
-                  @@ Wa.
-                       {
-                         ftype = get_idx type_idx;
-                         locals =
-                           List.init locals_count (fun _ ->
-                               phrase @@ { ltype = any_type });
-                         body;
-                       })
-            | _ -> None)
-          functions
-      in
-      let globals =
-        List.init globals (fun _ ->
-            phrase
-            @@ Wa.
-                 {
-                   gtype = GlobalT (Var, any_type);
-                   ginit = phrase @@ [ phrase @@ get_const 0 ] @ box;
-                 })
-      in
-      let exports =
-        List.map
-          (function
-            | ExportFunc (name, func_idx) ->
-                phrase
+  let assemble_module result =
+    let types = List.map phrase result.types in
+    let imports =
+      List.filter_map
+        (function
+          | ImportFunc (name, type_idx) ->
+              Some
+                (phrase
                 @@ Wa.
                      {
-                       name = decode_s name;
-                       edesc = phrase @@ FuncExport (get_idx func_idx);
+                       module_name = decode_s "lama";
+                       item_name = decode_s name;
+                       idesc = phrase @@ Wa.FuncImport (get_idx type_idx);
                      })
-          exports
-      in
-      let datas =
-        List.map
-          (fun s -> phrase @@ Wa.{ dinit = s; dmode = phrase @@ Passive })
-          datas
-      in
-      phrase
-        Wa.{ empty_module with imports; funcs; types; globals; exports; datas }
-  end
+          | _ -> None)
+        result.functions
+    in
+    let funcs =
+      List.filter_map
+        (function
+          | Func (type_idx, locals_count, body) ->
+              Some
+                (phrase
+                @@ Wa.
+                     {
+                       ftype = get_idx type_idx;
+                       locals =
+                         List.init locals_count (fun _ ->
+                             phrase @@ { ltype = any_type });
+                       body;
+                     })
+          | _ -> None)
+        result.functions
+    in
+    let globals =
+      List.init result.globals (fun _ ->
+          phrase
+          @@ Wa.
+               {
+                 gtype = GlobalT (Var, any_type);
+                 ginit = phrase @@ [ phrase @@ get_const 0 ] @ box;
+               })
+    in
+    let exports =
+      List.map
+        (function
+          | ExportFunc (name, func_idx) ->
+              phrase
+              @@ Wa.
+                   {
+                     name = decode_s name;
+                     edesc = phrase @@ FuncExport (get_idx func_idx);
+                   })
+        result.exports
+    in
+    let datas =
+      List.map
+        (fun s -> phrase @@ Wa.{ dinit = s; dmode = phrase @@ Passive })
+        result.datas
+    in
+    phrase
+      Wa.{ empty_module with imports; funcs; types; globals; exports; datas }
+end
 
-let add_secret_elem (env : env) =
+(* env is specific to some part of compilation, can rollback to earlier env *)
+module Env = struct
+  type t = {
+    result : Result.t;
+    scopes : w_value M.t list;
+    locals : int;
+    is_collecting_refs : bool;
+    refs : w_value list;
+  }
+
+  let empty =
+    {
+      result = Result.empty;
+      scopes = [];
+      locals = 0;
+      is_collecting_refs = false;
+      refs = [];
+    }
+
+  let upsert_type t env =
+    let type_idx, result = Result.upsert_type t env.result in
+    (type_idx, { env with result })
+
+  let bind name v scopes =
+    if M.mem name (List.hd scopes) then
+      report_error @@ Printf.sprintf "name \"%s\" is already defined" name
+    else M.add name v (List.hd scopes) :: List.tl scopes
+
+  let get name env =
+    let rec inner name = function
+      | [] -> None
+      | x :: xs -> (
+          match M.find_opt name x with None -> inner name xs | found -> found)
+    in
+    inner name env.scopes
+
+  let add_function_import name t env =
+    let func_idx, result = Result.add_function_import name t env.result in
+    let scopes = bind name (Callable func_idx) env.scopes in
+    { env with result; scopes }
+
+  let allocate_functions names env =
+    let start_idx, result =
+      Result.allocate_functions (List.length names) env.result
+    in
+    let _, scopes =
+      List.fold_left
+        (fun (idx, scopes) name -> (idx + 1, bind name (Callable idx) scopes))
+        (start_idx, env.scopes) names
+    in
+    { env with result; scopes }
+
+  let place_function name t locals_count body env =
+    let func_idx =
+      match env |> get name with
+      | Some (Callable x) -> x
+      | _ ->
+          report_error
+          @@ Printf.sprintf "function \"%s\" not allocated before placement"
+               name
+    in
+    let result =
+      Result.place_function func_idx t locals_count body env.result
+    in
+    { env with result }
+
+  let add_function name t locals_count body env =
+    let func_idx, result =
+      env.result |> Result.add_function t locals_count body
+    in
+    let scopes = env.scopes |> bind name (Callable func_idx) in
+    (func_idx, { env with result; scopes })
+
+  let upsert_helper name t locals_count body env =
+    let func_idx, result =
+      Result.upsert_helper name t locals_count body env.result
+    in
+    (func_idx, { env with result })
+
+  let export_function name idx env =
+    let result = Result.export_function name idx env.result in
+    { env with result }
+
+  let add_global name env =
+    let idx, result = Result.add_global env.result in
+    let scopes = env.scopes |> bind name (Global idx) in
+    (idx, { env with result; scopes })
+
+  let add_local name env =
+    let scopes = env.scopes |> bind name (Local env.locals) in
+    (env.locals, { env with locals = env.locals + 1; scopes })
+
+  let add_unnamed_local env = (env.locals, { env with locals = env.locals + 1 })
+
+  let upsert_data str env =
+    let data_idx, result = Result.upsert_data str env.result in
+    (data_idx, { env with result })
+
+  let enter_function env =
+    let scopes = get_last_2 env.scopes in
+    { env with scopes; locals = 0 }
+
+  let exit_function prev_env env = { prev_env with result = env.result }
+
+  let enter_scope env =
+    let scopes = M.empty :: env.scopes in
+    { env with scopes }
+
+  let exit_scope env =
+    let scopes = List.tl env.scopes in
+    { env with scopes }
+
+  let get_locals_count env = env.locals
+  let start_collecting_refs env = { env with is_collecting_refs = true }
+
+  let stop_collecting_refs env =
+    (env.refs, { env with is_collecting_refs = false; refs = [] })
+
+  let add_ref ref env =
+    if not env.is_collecting_refs then
+      report_error "tried to take ref outside of assignment operator"
+    else
+      let refs = env.refs @ [ ref ] in
+      (List.length env.refs, { env with refs })
+
+  let assemble_module env = Result.assemble_module env.result
+end
+
+let add_helper_elem env =
   let block_type_idx, env =
-    env#upsert_type
-      Wt.(
-        RecT [ SubT (Final, [], DefFuncT (FuncT ([ any_type ], [ any_type ]))) ])
+    env
+    |> Env.upsert_type
+         Wt.(
+           RecT
+             [ SubT (Final, [], DefFuncT (FuncT ([ any_type ], [ any_type ]))) ])
   in
-  let string_type_idx, env = env#upsert_type string_type in
-  let array_type_idx, env = env#upsert_type array_type in
-  let sexp_type_idx, env = env#upsert_type (sexp_type array_type_idx) in
-  env#add_secret_function "elem"
-    (* args: array, index *)
-    (* result: value *)
-    (Wt.FuncT ([ any_type; NumT I32T ], [ any_type ]))
-    0
-    [
-      phrase @@ Wa.LocalGet (get_idx 0);
-      phrase
-      @@ Wa.Block
-           ( VarBlockType (get_idx block_type_idx),
-             [
-               phrase
-               @@ Wa.BrOnCastFail
-                    (get_idx 0, any_ref_type, ref_type_of sexp_type_idx);
-               phrase @@ Wa.StructGet (get_idx sexp_type_idx, get_idx 1, None);
-               phrase @@ Wa.LocalGet (get_idx 1);
-               phrase @@ Wa.ArrayGet (get_idx array_type_idx, None);
-               phrase @@ Wa.Return;
-             ] );
-      phrase
-      @@ Wa.Block
-           ( VarBlockType (get_idx block_type_idx),
-             [
-               phrase
-               @@ Wa.BrOnCastFail
-                    (get_idx 0, any_ref_type, ref_type_of string_type_idx);
-               phrase @@ Wa.LocalGet (get_idx 1);
-               phrase @@ Wa.ArrayGet (get_idx string_type_idx, Some SX);
-             ]
-             @ box
-             @ [ phrase @@ Wa.Return ] );
-      phrase @@ Wa.RefCast (ref_type_of array_type_idx);
-      phrase @@ Wa.LocalGet (get_idx 1);
-      phrase @@ Wa.ArrayGet (get_idx array_type_idx, None);
-    ]
+  let string_type_idx, env = env |> Env.upsert_type string_type in
+  let array_type_idx, env = env |> Env.upsert_type array_type in
+  let sexp_type_idx, env = env |> Env.upsert_type (sexp_type array_type_idx) in
+  env
+  |> Env.upsert_helper "elem"
+       (* args: array, index *)
+       (* result: value *)
+       (Wt.FuncT ([ any_type; NumT I32T ], [ any_type ]))
+       0
+       [
+         phrase @@ Wa.LocalGet (get_idx 0);
+         phrase
+         @@ Wa.Block
+              ( VarBlockType (get_idx block_type_idx),
+                [
+                  phrase
+                  @@ Wa.BrOnCastFail
+                       (get_idx 0, any_ref_type, ref_type_of sexp_type_idx);
+                  phrase @@ Wa.StructGet (get_idx sexp_type_idx, get_idx 1, None);
+                  phrase @@ Wa.LocalGet (get_idx 1);
+                  phrase @@ Wa.ArrayGet (get_idx array_type_idx, None);
+                  phrase @@ Wa.Return;
+                ] );
+         phrase
+         @@ Wa.Block
+              ( VarBlockType (get_idx block_type_idx),
+                [
+                  phrase
+                  @@ Wa.BrOnCastFail
+                       (get_idx 0, any_ref_type, ref_type_of string_type_idx);
+                  phrase @@ Wa.LocalGet (get_idx 1);
+                  phrase @@ Wa.ArrayGet (get_idx string_type_idx, Some SX);
+                ]
+                @ box
+                @ [ phrase @@ Wa.Return ] );
+         phrase @@ Wa.RefCast (ref_type_of array_type_idx);
+         phrase @@ Wa.LocalGet (get_idx 1);
+         phrase @@ Wa.ArrayGet (get_idx array_type_idx, None);
+       ]
 
-let add_secret_assign (env : env) =
+let add_helper_assign env =
   let block_type_idx, env =
-    env#upsert_type
-      Wt.(
-        RecT [ SubT (Final, [], DefFuncT (FuncT ([ any_type ], [ any_type ]))) ])
+    env
+    |> Env.upsert_type
+         Wt.(
+           RecT
+             [ SubT (Final, [], DefFuncT (FuncT ([ any_type ], [ any_type ]))) ])
   in
-  let string_type_idx, env = env#upsert_type string_type in
-  let array_type_idx, env = env#upsert_type array_type in
-  let sexp_type_idx, env = env#upsert_type (sexp_type array_type_idx) in
-  env#add_secret_function "assign"
-    (* args: array, index, value *)
-    (* result: value *)
-    (Wt.FuncT ([ any_type; NumT I32T; any_type ], [ any_type ]))
-    0
-    [
-      phrase @@ Wa.LocalGet (get_idx 0);
-      phrase
-      @@ Wa.Block
-           ( VarBlockType (get_idx block_type_idx),
-             [
-               phrase
-               @@ Wa.BrOnCastFail
-                    (get_idx 0, any_ref_type, ref_type_of sexp_type_idx);
-               phrase @@ Wa.StructGet (get_idx sexp_type_idx, get_idx 1, None);
-               phrase @@ Wa.LocalGet (get_idx 1);
-               phrase @@ Wa.LocalGet (get_idx 2);
-               phrase @@ Wa.ArraySet (get_idx array_type_idx);
-               phrase @@ Wa.LocalGet (get_idx 2);
-               phrase @@ Wa.Return;
-             ] );
-      phrase
-      @@ Wa.Block
-           ( VarBlockType (get_idx block_type_idx),
-             [
-               phrase
-               @@ Wa.BrOnCastFail
-                    (get_idx 0, any_ref_type, ref_type_of string_type_idx);
-               phrase @@ Wa.LocalGet (get_idx 1);
-               phrase @@ Wa.LocalGet (get_idx 2);
-             ]
-             @ unbox
-             @ [
-                 phrase @@ Wa.ArraySet (get_idx string_type_idx);
-                 phrase @@ Wa.LocalGet (get_idx 2);
-                 phrase @@ Wa.Return;
-               ] );
-      phrase @@ Wa.RefCast (ref_type_of array_type_idx);
-      phrase @@ Wa.LocalGet (get_idx 1);
-      phrase @@ Wa.LocalGet (get_idx 2);
-      phrase @@ Wa.ArraySet (get_idx array_type_idx);
-      phrase @@ Wa.LocalGet (get_idx 2);
-    ]
+  let string_type_idx, env = env |> Env.upsert_type string_type in
+  let array_type_idx, env = env |> Env.upsert_type array_type in
+  let sexp_type_idx, env = env |> Env.upsert_type (sexp_type array_type_idx) in
+  env
+  |> Env.upsert_helper "assign"
+       (* args: array, index, value *)
+       (* result: value *)
+       (Wt.FuncT ([ any_type; NumT I32T; any_type ], [ any_type ]))
+       0
+       [
+         phrase @@ Wa.LocalGet (get_idx 0);
+         phrase
+         @@ Wa.Block
+              ( VarBlockType (get_idx block_type_idx),
+                [
+                  phrase
+                  @@ Wa.BrOnCastFail
+                       (get_idx 0, any_ref_type, ref_type_of sexp_type_idx);
+                  phrase @@ Wa.StructGet (get_idx sexp_type_idx, get_idx 1, None);
+                  phrase @@ Wa.LocalGet (get_idx 1);
+                  phrase @@ Wa.LocalGet (get_idx 2);
+                  phrase @@ Wa.ArraySet (get_idx array_type_idx);
+                  phrase @@ Wa.LocalGet (get_idx 2);
+                  phrase @@ Wa.Return;
+                ] );
+         phrase
+         @@ Wa.Block
+              ( VarBlockType (get_idx block_type_idx),
+                [
+                  phrase
+                  @@ Wa.BrOnCastFail
+                       (get_idx 0, any_ref_type, ref_type_of string_type_idx);
+                  phrase @@ Wa.LocalGet (get_idx 1);
+                  phrase @@ Wa.LocalGet (get_idx 2);
+                ]
+                @ unbox
+                @ [
+                    phrase @@ Wa.ArraySet (get_idx string_type_idx);
+                    phrase @@ Wa.LocalGet (get_idx 2);
+                    phrase @@ Wa.Return;
+                  ] );
+         phrase @@ Wa.RefCast (ref_type_of array_type_idx);
+         phrase @@ Wa.LocalGet (get_idx 1);
+         phrase @@ Wa.LocalGet (get_idx 2);
+         phrase @@ Wa.ArraySet (get_idx array_type_idx);
+         phrase @@ Wa.LocalGet (get_idx 2);
+       ]
 
-let rec compile_list (env : env) ast =
+let rec compile_list env ast =
   match ast with
   | Expr.Call (name, args) -> (
       match name with
       | Expr.Var name' -> (
-          match env#get name' with
+          match env |> Env.get name' with
           | Some (Callable func_idx) ->
               let env, code =
                 List.fold_left
@@ -464,15 +529,16 @@ let rec compile_list (env : env) ast =
         | ">" -> (env, [ phrase @@ get_compare Wa.I32Op.GtS ])
         | "&&" ->
             let type_idx, env =
-              env#upsert_type
-                Wt.(
-                  RecT
-                    [
-                      SubT
-                        ( Final,
-                          [],
-                          DefFuncT (FuncT ([ NumT I32T ], [ NumT I32T ])) );
-                    ])
+              env
+              |> Env.upsert_type
+                   Wt.(
+                     RecT
+                       [
+                         SubT
+                           ( Final,
+                             [],
+                             DefFuncT (FuncT ([ NumT I32T ], [ NumT I32T ])) );
+                       ])
             in
             ( env,
               [
@@ -505,18 +571,16 @@ let rec compile_list (env : env) ast =
       let env, code = compile_list env s in
       (env, code @ [ phrase Wa.Drop ])
   | Expr.Var name -> (
-      match env#get name with
-      | Some (Global index) ->
-          (env, [ phrase @@ Wa.GlobalGet (get_idx index) ])
-      | Some (Local index) ->
-          (env, [ phrase @@ Wa.LocalGet (get_idx index) ])
+      match env |> Env.get name with
+      | Some (Global index) -> (env, [ phrase @@ Wa.GlobalGet (get_idx index) ])
+      | Some (Local index) -> (env, [ phrase @@ Wa.LocalGet (get_idx index) ])
       | _ ->
           report_error
           @@ Printf.sprintf "trying to get, var with name \"%s\" not found" name
       )
   | Expr.Assign (Expr.Ref name, instr) -> (
       let env, code = compile_list env instr in
-      match env#get name with
+      match env |> Env.get name with
       | Some (Global index) ->
           ( env,
             code
@@ -531,7 +595,7 @@ let rec compile_list (env : env) ast =
           @@ Printf.sprintf "trying to set, var with name \"%s\" not found" name
       )
   | Expr.Assign (Expr.ElemRef (arr, index), instr) ->
-      let assign_func_idx, env = add_secret_assign env in
+      let assign_func_idx, env = add_helper_assign env in
       let env, arr_code = compile_list env arr in
       let env, index_code = compile_list env index in
       let env, code = compile_list env instr in
@@ -539,19 +603,19 @@ let rec compile_list (env : env) ast =
         arr_code @ index_code @ unbox @ code
         @ [ phrase @@ Wa.Call (get_idx assign_func_idx) ] )
   | Expr.Assign (ref, value) ->
-      let env = env#start_collecting_refs in
+      let env = env |> Env.start_collecting_refs in
       let env, ref_code = compile_list env ref in
-      let refs, env = env#stop_collecting_refs in
+      let refs, env = env |> Env.stop_collecting_refs in
       let env, value_code = compile_list env value in
-      let assign_func_idx, env = add_secret_assign env in
-      let temp_locals, env = env#get_temp_locals 2 in
-      let type_idx, env = env#upsert_type stack_ref_type in
+      let assign_func_idx, env = add_helper_assign env in
+      let type_idx, env = env |> Env.upsert_type stack_ref_type in
       let block_type_idx, env =
-        env#upsert_type
-          Wt.(RecT [ SubT (Final, [], DefFuncT (FuncT ([ any_type ], []))) ])
+        env
+        |> Env.upsert_type
+             Wt.(RecT [ SubT (Final, [], DefFuncT (FuncT ([ any_type ], []))) ])
       in
-      let ref_temp = List.hd temp_locals in
-      let value_temp = List.nth temp_locals 1 in
+      let ref_temp, env = env |> Env.add_unnamed_local in
+      let value_temp, env = env |> Env.add_unnamed_local in
       let refs_code =
         refs
         |> List.mapi (fun i r ->
@@ -608,15 +672,15 @@ let rec compile_list (env : env) ast =
           ] )
   | Expr.Ref name ->
       let ref =
-        match env#get name with
+        match env |> Env.get name with
         | Some l -> l
         | _ ->
             report_error
             @@ Printf.sprintf
                  "trying to get ref, var with name \"%s\" not found" name
       in
-      let ref_num, env = env#add_ref ref in
-      let type_idx, env = env#upsert_type stack_ref_type in
+      let ref_num, env = env |> Env.add_ref ref in
+      let type_idx, env = env |> Env.upsert_type stack_ref_type in
       ( env,
         [ phrase @@ get_const ref_num ]
         @ box
@@ -627,7 +691,7 @@ let rec compile_list (env : env) ast =
   | Expr.ElemRef (arr, index) ->
       let env, array_code = compile_list env arr in
       let env, index_code = compile_list env index in
-      let type_idx, env = env#upsert_type stack_ref_type in
+      let type_idx, env = env |> Env.upsert_type stack_ref_type in
       ( env,
         array_code @ index_code @ unbox
         @ [ phrase @@ Wa.StructNew (get_idx type_idx, Explicit) ] )
@@ -674,32 +738,32 @@ let rec compile_list (env : env) ast =
                );
         ] )
   | Expr.Scope (decls, instr) ->
-      let env = env#enter_scope in
-      let env, code =
+      let env' = env |> Env.enter_scope in
+      let env', code =
         compile_scope decls instr
-          (fun env name -> snd (env#add_local name))
+          (fun env name -> snd (env |> Env.add_local name))
           (fun env name ->
-            match env#get name with
+            match env |> Env.get name with
             | Some (Local index) -> phrase @@ Wa.LocalSet (get_idx @@ index)
             | _ -> report_error "local was not added properly")
-          env
+          env'
       in
-      (env#exit_scope, code)
+      (env' |> Env.exit_scope, code)
   | Expr.String str ->
-      let type_idx, env = env#upsert_type string_type in
-      let data_idx, env = env#upsert_data str in
+      let type_idx, env = env |> Env.upsert_type string_type in
+      let data_idx, env = env |> Env.upsert_data str in
       let size = String.length str in
       let instr = Wa.ArrayNewData (get_idx type_idx, get_idx data_idx) in
       (env, [ phrase @@ get_const 0; phrase @@ get_const size; phrase @@ instr ])
   | Expr.Elem (arr, index) ->
-      let elem_func_idx, env = add_secret_elem env in
+      let elem_func_idx, env = add_helper_elem env in
       let env, arr_code = compile_list env arr in
       let env, index_code = compile_list env index in
       ( env,
         arr_code @ index_code @ unbox
         @ [ phrase @@ Wa.Call (get_idx elem_func_idx) ] )
   | Expr.Array elems ->
-      let array_type_idx, env = env#upsert_type array_type in
+      let array_type_idx, env = env |> Env.upsert_type array_type in
       let env, code =
         List.fold_left
           (fun (env, acc) elem ->
@@ -717,8 +781,10 @@ let rec compile_list (env : env) ast =
           ] )
   | Expr.Sexp (tag, vals) ->
       let hash_value = hash tag in
-      let array_type_idx, env = env#upsert_type array_type in
-      let sexp_type_idx, env = env#upsert_type (sexp_type array_type_idx) in
+      let array_type_idx, env = env |> Env.upsert_type array_type in
+      let sexp_type_idx, env =
+        env |> Env.upsert_type (sexp_type array_type_idx)
+      in
       let env, vals_code =
         List.fold_left
           (fun (env, acc) elem ->
@@ -738,9 +804,8 @@ let rec compile_list (env : env) ast =
           ] )
   | Expr.Case (value, patterns, _, attr) ->
       let env, value_code = compile_list env value in
-      let temp_locals, env = env#get_temp_locals 1 in
-      let value_temp = List.hd temp_locals in
-      let elem_func_idx, env = add_secret_elem env in
+      let value_temp, env = env |> Env.add_unnamed_local in
+      let elem_func_idx, env = add_helper_elem env in
       let rec compile_pattern env pattern path =
         let elem_code =
           [ phrase @@ Wa.LocalGet (get_idx value_temp) ]
@@ -755,9 +820,9 @@ let rec compile_list (env : env) ast =
         in
         match pattern with
         | Pattern.Sexp (tag, elems) ->
-            let array_type_idx, env = env#upsert_type array_type in
+            let array_type_idx, env = env |> Env.upsert_type array_type in
             let sexp_type_idx, env =
-              env#upsert_type (sexp_type array_type_idx)
+              env |> Env.upsert_type (sexp_type array_type_idx)
             in
             let check_code =
               elem_code
@@ -827,12 +892,12 @@ let rec compile_list (env : env) ast =
         patterns
         |> List.fold_left
              (fun (env, blocks) (p, e) ->
-               let env = env#enter_scope in
+               let env = env |> Env.enter_scope in
                let env, check_code, bindings = compile_pattern env p [] in
                let env, bindings_code =
                  List.fold_left
                    (fun (env, result) (name, code) ->
-                     let idx, env = env#add_local name in
+                     let idx, env = env |> Env.add_local name in
                      ( env,
                        result @ code @ [ phrase @@ Wa.LocalSet (get_idx idx) ]
                      ))
@@ -846,13 +911,11 @@ let rec compile_list (env : env) ast =
                         check_code @ bindings_code @ block_code
                         @ [ phrase @@ Wa.Br (get_idx 1) ] )
                in
-               (env#exit_scope, blocks @ [ block ]))
+               (env |> Env.exit_scope, blocks @ [ block ]))
              (env, [])
       in
       let env, t =
-        match attr with
-        | Void -> (env, None)
-        | _ -> (env, Some any_type)
+        match attr with Void -> (env, None) | _ -> (env, Some any_type)
       in
       ( env,
         value_code
@@ -888,7 +951,7 @@ and compile_scope decls instr add_local init_local env =
         | _ -> None)
       decls
   in
-  let env = env#allocate_functions @@ List.map fst functions in
+  let env = env |> Env.allocate_functions @@ List.map fst functions in
   let env =
     List.fold_left
       (fun env (name, (args, body)) ->
@@ -898,16 +961,16 @@ and compile_scope decls instr add_local init_local env =
               List.map (fun arg -> (arg, (`Local, `Variable None))) args @ decls
             in
             let env_after_function, code =
-              compile_list env#enter_function (Expr.Scope (decls, instr))
+              compile_list (Env.enter_function env) (Expr.Scope (decls, instr))
             in
             let locals_count =
-              env_after_function#get_locals_count - List.length args
+              Env.get_locals_count env_after_function - List.length args
             in
-            let env = env_after_function#exit_function env in
+            let env = env_after_function |> Env.exit_function env in
             let t =
               Wt.(FuncT (List.map (fun _ -> any_type) args, [ any_type ]))
             in
-            env#place_function name t locals_count code
+            env |> Env.place_function name t locals_count code
         | _ -> report_error "expected scope as function root")
       env functions
   in
@@ -929,62 +992,74 @@ and compile_scope decls instr add_local init_local env =
 
 let add_runtime env =
   let block_type_idx, env =
-    env#upsert_type
-      Wt.(
-        RecT [ SubT (Final, [], DefFuncT (FuncT ([ any_type ], [ any_type ]))) ])
+    env
+    |> Env.upsert_type
+         Wt.(
+           RecT
+             [ SubT (Final, [], DefFuncT (FuncT ([ any_type ], [ any_type ]))) ])
   in
-  let array_type_idx, env = env#upsert_type array_type in
-  let sexp_type_idx, env = env#upsert_type (sexp_type array_type_idx) in
+  let array_type_idx, env = env |> Env.upsert_type array_type in
+  let sexp_type_idx, env = env |> Env.upsert_type (sexp_type array_type_idx) in
   let _, env =
-    env#add_function "length"
-      (Wt.FuncT ([ any_type ], [ any_type ]))
-      0
-      [
-        phrase @@ Wa.LocalGet (get_idx 0);
-        phrase
-        @@ Wa.Block
-             ( VarBlockType (get_idx block_type_idx),
-               [
-                 phrase
-                 @@ Wa.BrOnCastFail
-                      (get_idx 0, any_ref_type, ref_type_of sexp_type_idx);
-                 phrase @@ Wa.StructGet (get_idx sexp_type_idx, get_idx 1, None);
-                 phrase @@ Wa.ArrayLen;
-                 phrase @@ Wa.RefI31;
-                 phrase @@ Wa.Return;
-               ] );
-        phrase @@ Wa.RefCast (NoNull, ArrayHT);
-        phrase @@ Wa.ArrayLen;
-        phrase @@ Wa.RefI31;
-      ]
+    env
+    |> Env.add_function "length"
+         (Wt.FuncT ([ any_type ], [ any_type ]))
+         0
+         [
+           phrase @@ Wa.LocalGet (get_idx 0);
+           phrase
+           @@ Wa.Block
+                ( VarBlockType (get_idx block_type_idx),
+                  [
+                    phrase
+                    @@ Wa.BrOnCastFail
+                         (get_idx 0, any_ref_type, ref_type_of sexp_type_idx);
+                    phrase
+                    @@ Wa.StructGet (get_idx sexp_type_idx, get_idx 1, None);
+                    phrase @@ Wa.ArrayLen;
+                    phrase @@ Wa.RefI31;
+                    phrase @@ Wa.Return;
+                  ] );
+           phrase @@ Wa.RefCast (NoNull, ArrayHT);
+           phrase @@ Wa.ArrayLen;
+           phrase @@ Wa.RefI31;
+         ]
   in
   env
 
 let compile ast =
-  let env = new env in
+  let env = Env.empty in
   match ast with
   | Expr.Scope (decls, instr) ->
-      let _, env =
-        env#add_function_import "write" (FuncT ([ any_type ], [ any_type ]))
+      let env = env |> Env.enter_scope in
+      let env =
+        env
+        |> Env.add_function_import "write" (FuncT ([ any_type ], [ any_type ]))
       in
-      let _, env = env#add_function_import "read" (FuncT ([], [ any_type ])) in
+      let env =
+        env |> Env.add_function_import "read" (FuncT ([], [ any_type ]))
+      in
 
       let env = add_runtime env in
+      let env = env |> Env.enter_scope in
 
       let env, code =
         compile_scope decls (Expr.Ignore instr)
-          (fun env name -> snd (env#add_global name))
+          (fun env name -> snd (env |> Env.add_global name))
           (fun env name ->
-            match env#get name with
+            match env |> Env.get name with
             | Some (Global index) -> phrase @@ Wa.GlobalSet (get_idx @@ index)
             | _ -> report_error "global was not added properly")
           env
       in
-      let _, env =
-        env#add_function "main" (FuncT ([], [])) env#get_locals_count code
+      let func_idx, env =
+        env
+        |> Env.add_function "main"
+             (FuncT ([], []))
+             (Env.get_locals_count env) code
       in
-      let env = env#export_function "main" in
-      env#assemble_module
+      let env = env |> Env.export_function "main" func_idx in
+      env |> Env.assemble_module
   | _ -> report_error "expected root scope"
 
 let genast _ ((_, _), p) = compile p
