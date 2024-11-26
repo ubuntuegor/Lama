@@ -19,11 +19,11 @@ const filePath = argv[2]
 const wasmFile = fs.readFileSync(filePath)
 WebAssembly.instantiate(wasmFile, {
     "lama": {
-        "write": num => {
+        "write": (_, num) => {
             console.log(num)
             return 0
         },
-        "read": () => {
+        "read": (_) => {
             fs.writeSync(1, "> ")
             return readNum()
         }
