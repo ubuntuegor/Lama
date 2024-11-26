@@ -632,6 +632,15 @@ module Env = struct
   let get_call_map env = env.call_map
   let get_value_locs env = env.value_locs
 
+  let is_global_func name env =
+    let global_scopes = get_last_2 env.scopes in
+    let rec inner name = function
+      | [] -> None
+      | x :: xs -> (
+          match M.find_opt name x with None -> inner name xs | found -> found)
+    in
+    match inner name global_scopes with Some (Callable _) -> true | _ -> false
+
   let expand_closures env =
     let result = Result.expand_closures env.result in
     { env with result }
@@ -755,6 +764,25 @@ let add_helper_assign env =
 
 let rec compile_list env ast =
   match ast with
+  | Expr.Call (Expr.Var name, args) when Env.is_global_func name env -> (
+      let loc, env = env |> Env.get name in
+      match loc with
+      | Some (Callable func_idx) ->
+          let array_type_idx, env = env |> Env.upsert_type array_type in
+          let args_code, env =
+            List.fold_left
+              (fun (acc, env) arg ->
+                let env, code = compile_list env arg in
+                (acc @ code, env))
+              ([], env) args
+          in
+          ( env,
+            [
+              phrase @@ Wa.ArrayNewFixed (get_idx array_type_idx, Int32.of_int 0);
+            ]
+            @ args_code
+            @ [ phrase @@ Wa.Call (get_idx func_idx) ] )
+      | _ -> report_error "simplified function call failed")
   | Expr.Call (name, args) ->
       let env, name_code = compile_list env name in
       let name_temp, env = env |> Env.add_unnamed_local in
