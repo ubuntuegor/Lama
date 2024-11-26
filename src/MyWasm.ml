@@ -1241,31 +1241,26 @@ let rec compile_list env ast =
   | Expr.Lambda (args, body) ->
       let array_type_idx, env = env |> Env.upsert_type array_type in
       let func_idx, env =
-        match body with
-        | Expr.Scope (decls, instr) ->
-            let env' = Env.enter_function env in
-            let _, env' = env' |> Env.add_unnamed_local in
-            let env' =
-              List.fold_left
-                (fun env' arg -> snd (env' |> Env.add_local arg))
-                env' args
-            in
-            let env', code = compile_scope decls instr false env' in
-            let locals_count =
-              Env.get_locals_count env' - List.length args - 1
-            in
-            let env = env' |> Env.exit_function env in
-            let t =
-              Wt.(
-                FuncT
-                  ( RefT (ref_type_of array_type_idx)
-                    :: List.init (List.length args) (fun _ -> any_type),
-                    [ any_type ] ))
-            in
-            env
-            |> Env.add_function None t locals_count code
-                 (Env.get_value_locs env') (Env.get_call_map env')
-        | _ -> report_error "expected scope as function root"
+        let env' = Env.enter_function env in
+        let _, env' = env' |> Env.add_unnamed_local in
+        let env' =
+          List.fold_left
+            (fun env' arg -> snd (env' |> Env.add_local arg))
+            env' args
+        in
+        let env', code = compile_list env' body in
+        let locals_count = Env.get_locals_count env' - List.length args - 1 in
+        let env = env' |> Env.exit_function env in
+        let t =
+          Wt.(
+            FuncT
+              ( RefT (ref_type_of array_type_idx)
+                :: List.init (List.length args) (fun _ -> any_type),
+                [ any_type ] ))
+        in
+        env
+        |> Env.add_function None t locals_count code (Env.get_value_locs env')
+             (Env.get_call_map env')
       in
       let env = env |> Env.register_call func_idx in
       (* placeholder for creating a closure in 2nd pass *)
@@ -1306,31 +1301,26 @@ and compile_scope decls instr is_top_level env =
   let env =
     List.fold_left
       (fun env (name, (args, body)) ->
-        match body with
-        | Expr.Scope (decls, instr) ->
-            let env' = Env.enter_function env in
-            let _, env' = env' |> Env.add_unnamed_local in
-            let env' =
-              List.fold_left
-                (fun env' arg -> snd (env' |> Env.add_local arg))
-                env' args
-            in
-            let env', code = compile_scope decls instr false env' in
-            let locals_count =
-              Env.get_locals_count env' - List.length args - 1
-            in
-            let env = env' |> Env.exit_function env in
-            let t =
-              Wt.(
-                FuncT
-                  ( RefT (ref_type_of array_type_idx)
-                    :: List.init (List.length args) (fun _ -> any_type),
-                    [ any_type ] ))
-            in
-            env
-            |> Env.place_function name t locals_count code
-                 (Env.get_value_locs env') (Env.get_call_map env')
-        | _ -> report_error "expected scope as function root")
+        let env' = Env.enter_function env in
+        let _, env' = env' |> Env.add_unnamed_local in
+        let env' =
+          List.fold_left
+            (fun env' arg -> snd (env' |> Env.add_local arg))
+            env' args
+        in
+        let env', code = compile_list env' body in
+        let locals_count = Env.get_locals_count env' - List.length args - 1 in
+        let env = env' |> Env.exit_function env in
+        let t =
+          Wt.(
+            FuncT
+              ( RefT (ref_type_of array_type_idx)
+                :: List.init (List.length args) (fun _ -> any_type),
+                [ any_type ] ))
+        in
+        env
+        |> Env.place_function name t locals_count code (Env.get_value_locs env')
+             (Env.get_call_map env'))
       env functions
   in
 
