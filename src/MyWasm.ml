@@ -185,39 +185,34 @@ module Result = struct
       let functions = result.functions @ [ ImportFunc (name, type_idx) ] in
       (func_idx, { result with types; functions })
 
-  let add_function t locals_count body value_locs call_map result =
-    let type_idx, types =
-      upsert Wt.(RecT [ SubT (Final, [], DefFuncT t) ]) result.types
-    in
-    let func_idx = List.length result.functions in
-    let functions =
-      result.functions @ [ Func (type_idx, locals_count, body) ]
-    in
-    let value_locs = Mi.add func_idx value_locs result.value_locs in
-    let call_map = Mi.add func_idx call_map result.call_map in
-    (func_idx, { result with types; functions; value_locs; call_map })
-
   let allocate_functions n result =
     let start_idx = List.length result.functions in
     let functions = result.functions @ List.init n (fun _ -> Func (0, 0, [])) in
     (start_idx, { result with functions })
 
-  let place_function idx t locals_count body value_locs call_map result =
+  let add_or_place_function idx t locals_count body value_locs call_map result =
     let type_idx, types =
       upsert Wt.(RecT [ SubT (Final, [], DefFuncT t) ]) result.types
     in
-    let functions =
-      replace idx (Func (type_idx, locals_count, body)) result.functions
+    let func = Func (type_idx, locals_count, body) in
+    let func_idx =
+      idx |> Option.value ~default:(List.length result.functions)
     in
-    let value_locs = Mi.add idx value_locs result.value_locs in
-    let call_map = Mi.add idx call_map result.call_map in
-    { result with types; functions; value_locs; call_map }
+    let functions =
+      match idx with
+      | Some func_idx -> replace func_idx func result.functions
+      | None -> result.functions @ [ func ]
+    in
+    let value_locs = Mi.add func_idx value_locs result.value_locs in
+    let call_map = Mi.add func_idx call_map result.call_map in
+    (func_idx, { result with types; functions; value_locs; call_map })
 
   let upsert_helper name t locals_count body result =
     match M.find_opt name result.helpers with
     | None ->
         let func_idx, result =
-          add_function t locals_count body Mi.empty Si.empty result
+          add_or_place_function None t locals_count body Mi.empty Si.empty
+            result
         in
         let helpers = M.add name func_idx result.helpers in
         (func_idx, { result with helpers })
@@ -544,15 +539,17 @@ module Env = struct
           @@ Printf.sprintf "function \"%s\" not allocated before placement"
                name
     in
-    let result =
-      Result.place_function func_idx t locals_count body value_locs call_map
-        env.result
+    let _, result =
+      Result.add_or_place_function (Some func_idx) t locals_count body
+        value_locs call_map env.result
     in
-    { env with result }
+    (func_idx, { env with result })
 
   let add_function name t locals_count body value_locs call_map env =
     let func_idx, result =
-      env.result |> Result.add_function t locals_count body value_locs call_map
+      env.result
+      |> Result.add_or_place_function None t locals_count body value_locs
+           call_map
     in
     let scopes =
       match name with
@@ -1239,28 +1236,8 @@ let rec compile_list env ast =
             @@ Wa.Block (ValBlockType t, blocks @ [ phrase @@ Wa.Unreachable ]);
           ] )
   | Expr.Lambda (args, body) ->
-      let array_type_idx, env = env |> Env.upsert_type array_type in
       let func_idx, env =
-        let env' = Env.enter_function env in
-        let _, env' = env' |> Env.add_unnamed_local in
-        let env' =
-          List.fold_left
-            (fun env' arg -> snd (env' |> Env.add_local arg))
-            env' args
-        in
-        let env', code = compile_list env' body in
-        let locals_count = Env.get_locals_count env' - List.length args - 1 in
-        let env = env' |> Env.exit_function env in
-        let t =
-          Wt.(
-            FuncT
-              ( RefT (ref_type_of array_type_idx)
-                :: List.init (List.length args) (fun _ -> any_type),
-                [ any_type ] ))
-        in
-        env
-        |> Env.add_function None t locals_count code (Env.get_value_locs env')
-             (Env.get_call_map env')
+        compile_and_add_function env args body (Env.add_function None)
       in
       let env = env |> Env.register_call func_idx in
       (* placeholder for creating a closure in 2nd pass *)
@@ -1296,31 +1273,11 @@ and compile_scope decls instr is_top_level env =
         | _ -> None)
       decls
   in
-  let array_type_idx, env = env |> Env.upsert_type array_type in
   let env = env |> Env.allocate_functions (List.map fst functions) in
   let env =
     List.fold_left
       (fun env (name, (args, body)) ->
-        let env' = Env.enter_function env in
-        let _, env' = env' |> Env.add_unnamed_local in
-        let env' =
-          List.fold_left
-            (fun env' arg -> snd (env' |> Env.add_local arg))
-            env' args
-        in
-        let env', code = compile_list env' body in
-        let locals_count = Env.get_locals_count env' - List.length args - 1 in
-        let env = env' |> Env.exit_function env in
-        let t =
-          Wt.(
-            FuncT
-              ( RefT (ref_type_of array_type_idx)
-                :: List.init (List.length args) (fun _ -> any_type),
-                [ any_type ] ))
-        in
-        env
-        |> Env.place_function name t locals_count code (Env.get_value_locs env')
-             (Env.get_call_map env'))
+        snd @@ compile_and_add_function env args body (Env.place_function name))
       env functions
   in
 
@@ -1346,6 +1303,25 @@ and compile_scope decls instr is_top_level env =
 
   let env, code = compile_list env instr in
   (env, locals_init_code @ code)
+
+and compile_and_add_function env args body add =
+  let array_type_idx, env = env |> Env.upsert_type array_type in
+  let env' = Env.enter_function env in
+  let _, env' = env' |> Env.add_unnamed_local in
+  let env' =
+    List.fold_left (fun env' arg -> snd (env' |> Env.add_local arg)) env' args
+  in
+  let env', code = compile_list env' body in
+  let locals_count = Env.get_locals_count env' - List.length args - 1 in
+  let env = env' |> Env.exit_function env in
+  let t =
+    Wt.(
+      FuncT
+        ( RefT (ref_type_of array_type_idx)
+          :: List.init (List.length args) (fun _ -> any_type),
+          [ any_type ] ))
+  in
+  add t locals_count code (Env.get_value_locs env') (Env.get_call_map env') env
 
 let add_runtime env =
   let block_type_idx, env =
@@ -1389,22 +1365,21 @@ let add_runtime env =
 let compile ast =
   let env = Env.empty in
   let array_type_idx, env = env |> Env.upsert_type array_type in
+  let env = env |> Env.enter_scope in
+  let env =
+    env
+    |> Env.add_function_import "write"
+         (FuncT ([ RefT (ref_type_of array_type_idx); any_type ], [ any_type ]))
+  in
+  let env =
+    env
+    |> Env.add_function_import "read"
+         (FuncT ([ RefT (ref_type_of array_type_idx) ], [ any_type ]))
+  in
+  let env = add_runtime env in
+
   match ast with
   | Expr.Scope (decls, instr) ->
-      let env = env |> Env.enter_scope in
-      let env =
-        env
-        |> Env.add_function_import "write"
-             (FuncT
-                ([ RefT (ref_type_of array_type_idx); any_type ], [ any_type ]))
-      in
-      let env =
-        env
-        |> Env.add_function_import "read"
-             (FuncT ([ RefT (ref_type_of array_type_idx) ], [ any_type ]))
-      in
-      let env = add_runtime env in
-
       let env = env |> Env.enter_function in
       let env, code = compile_scope decls (Expr.Ignore instr) true env in
       let func_idx, env =
