@@ -633,13 +633,15 @@ module Env = struct
   let get_value_locs env = env.value_locs
 
   let is_global_func name env =
-    let global_scopes = get_last_2 env.scopes in
-    let rec inner name = function
+    let rec inner name scopes =
+      match scopes with
       | [] -> None
       | x :: xs -> (
-          match M.find_opt name x with None -> inner name xs | found -> found)
+          match M.find_opt name x with
+          | None -> inner name xs
+          | found -> if List.length scopes <= 2 then found else None)
     in
-    match inner name global_scopes with Some (Callable _) -> true | _ -> false
+    match inner name env.scopes with Some (Callable _) -> true | _ -> false
 
   let expand_closures env =
     let result = Result.expand_closures env.result in

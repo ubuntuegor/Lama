@@ -1,0 +1,16 @@
+fun test() {
+  write(1)
+}
+
+fun test_2() {
+  var x = 2;
+
+  fun test() {
+    write(x)
+  }
+
+  test()
+}
+
+test();
+test_2()
