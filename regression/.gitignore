@@ -1,5 +1,13 @@
+test*
+!test*.*
+generated*
+!generated*.*
+
 *.html
 *.sm
-/*.log
+*.log
+!orig/*.log
 *.i
 *.s
+*.wat
+*.wasm
