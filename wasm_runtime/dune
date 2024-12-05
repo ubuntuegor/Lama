@@ -1,12 +1,12 @@
 (executable
-  (public_name wasm)
-  (modules wasm)
+  (public_name wasm_tool)
+  (modules wasm_tool)
   (libraries wasm)
   (flags (-open Wasm))
 )
 
 (rule
-  (targets wasm.ml)
+  (targets wasm_tool.ml)
   (deps ../src/vendor/wasm/interpreter/main/main.ml)
-  (action (copy ../src/vendor/wasm/interpreter/main/main.ml wasm.ml))
+  (action (copy ../src/vendor/wasm/interpreter/main/main.ml wasm_tool.ml))
 )
