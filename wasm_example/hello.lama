@@ -1,0 +1,6 @@
+import Ref;
+
+var f = ref(5);
+
+f ::= deref(f) + 5;
+write(deref(f))

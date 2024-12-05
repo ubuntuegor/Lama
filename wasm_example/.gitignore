@@ -1,0 +1,7 @@
+hello
+*.html
+*.i
+*.s
+*.sm
+*.wasm
+*.wat
