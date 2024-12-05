@@ -7,6 +7,7 @@ MKDIR ?= mkdir
 all:
 	$(MAKE) -C src
 	$(MAKE) -C runtime
+	$(MAKE) -C wasm_runtime
 	$(MAKE) -C byterun
 	$(MAKE) -C stdlib
 	$(MAKE) -C runtime unit_tests.o
@@ -45,6 +46,7 @@ negative_scenarios_tests:
 clean:
 	$(MAKE) clean -C src
 	$(MAKE) clean -C runtime
+	$(MAKE) clean -C wasm_runtime
 	$(MAKE) clean -C stdlib
 	$(MAKE) clean -C regression
 	$(MAKE) clean -C byterun

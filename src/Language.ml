@@ -1099,7 +1099,7 @@ module Interface =
             (function
              | (name, (`Public, item)) | (name, (`PublicExtern, item))  ->
                 (match item with
-                 | `Fun _      -> append "F,"; append name; append ";\n"
+                 | `Fun (args, _)      -> append "F,"; append name; append ","; append (string_of_int (List.length args)); append ";\n"
                  | `Variable _ -> append "V,"; append name; append ";\n"
                 )
              | _ -> ()
@@ -1120,7 +1120,7 @@ module Interface =
     (* Read an interface file *)
     let [@ocaml.warning "-26"] read fname =
       let ostap (
-              funspec: "F" "," i:IDENT ";" {`Fun i};
+              funspec: "F" "," i:IDENT "," a:DECIMAL ";" {`Fun (i, a)};
               varspec: "V" "," i:IDENT ";" {`Variable i};
               import : "I" "," i:IDENT ";" {`Import i};
               infix  : a:ass "," op:STRING "," l:loc ";" {`Infix (a, op, l)};
@@ -1134,6 +1134,7 @@ module Interface =
         let s = Util.read fname in
         (match Util.parse (object
                              inherit Matcher.t s
+                             inherit Util.Lexers.decimal s
                              inherit Util.Lexers.ident [] s
                              inherit Util.Lexers.string s
                              inherit Util.Lexers.skip  [Matcher.Skip.whitespaces " \t\n"] s

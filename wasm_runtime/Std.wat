@@ -1,0 +1,18 @@
+(module
+  (type $array_type (array (mut (ref any))))
+  (type $sexp_type (struct (field i32) (field (ref $array_type))))
+  (func (export "length") (param (ref $array_type)) (param $arg (ref any)) (result (ref any))
+    (local.get $arg)
+    (block
+      (param (ref any)) (result (ref any))
+      (br_on_cast_fail 0 (ref any) (ref $sexp_type))
+      (struct.get $sexp_type 1)
+      (array.len)
+      (ref.i31)
+      (return)
+    )
+    (ref.cast (ref array))
+    (array.len)
+    (ref.i31)
+  )
+)

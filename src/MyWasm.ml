@@ -89,7 +89,7 @@ let hash tag =
   !h
 
 type w_func =
-  | ImportFunc of string * int (* name, type_idx *)
+  | ImportFunc of string * string * int (* module, name, type_idx *)
   | Func of int * int * Wa.instr list (* type_idx, locals_count, body *)
 
 type w_value =
@@ -171,18 +171,17 @@ module Result = struct
     let type_idx, types = upsert t result.types in
     (type_idx, { result with types })
 
-  let add_function_import name t result =
-    if
-      is_last
-        (function ImportFunc (_, _) -> false | _ -> true)
-        result.functions
+  let add_function_import module_name name t result =
+    if is_last (function ImportFunc _ -> false | _ -> true) result.functions
     then report_error "all imports should be added before other functions"
     else
       let type_idx, types =
         upsert Wt.(RecT [ SubT (Final, [], DefFuncT t) ]) result.types
       in
       let func_idx = List.length result.functions in
-      let functions = result.functions @ [ ImportFunc (name, type_idx) ] in
+      let functions =
+        result.functions @ [ ImportFunc (module_name, name, type_idx) ]
+      in
       (func_idx, { result with types; functions })
 
   let allocate_functions n result =
@@ -372,12 +371,12 @@ module Result = struct
     let imports =
       List.filter_map
         (function
-          | ImportFunc (name, type_idx) ->
+          | ImportFunc (module_name, name, type_idx) ->
               Some
                 (phrase
                 @@ Wa.
                      {
-                       module_name = decode_s "lama";
+                       module_name = decode_s module_name;
                        item_name = decode_s name;
                        idesc = phrase @@ Wa.FuncImport (get_idx type_idx);
                      })
@@ -513,8 +512,10 @@ module Env = struct
     let result, scopes, closures, value_locs = inner name env.scopes in
     (result, { env with scopes; closures; value_locs })
 
-  let add_function_import name t env =
-    let func_idx, result = Result.add_function_import name t env.result in
+  let add_function_import module_name name t env =
+    let func_idx, result =
+      Result.add_function_import module_name name t env.result
+    in
     let scopes = bind name (Callable func_idx) env.scopes in
     { env with result; scopes }
 
@@ -1298,19 +1299,30 @@ and compile_scope decls instr is_top_level env =
     List.filter_map
       (fun (name, decl) ->
         match decl with
-        | `Local, `Fun (args, body) -> Some (name, (args, body))
-        | _, `Fun _ -> report_error "only local functions supported"
+        | ((`Local | `Public) as q), `Fun (args, body) ->
+            Some (name, q, (args, body))
+        | _, `Fun _ -> report_error "external functions are not supported yet"
         | _ -> None)
       decls
   in
-  let env = env |> Env.allocate_functions (List.map fst functions) in
+  let env =
+    env
+    |> Env.allocate_functions (List.map (fun (name, _, _) -> name) functions)
+  in
   let env =
     List.fold_left
-      (fun env (name, (args, body)) ->
-        snd @@ compile_and_add_function env args body (Env.place_function name))
+      (fun env (name, q, (args, body)) ->
+        let func_idx, env =
+          compile_and_add_function env args body (Env.place_function name)
+        in
+        let env =
+          match q with
+          | `Public -> env |> Env.export_function name func_idx
+          | _ -> env
+        in
+        env)
       env functions
   in
-
   let env, locals_init_code =
     locals
     |> List.map (fun (name, init) ->
@@ -1353,61 +1365,7 @@ and compile_and_add_function env args body add =
   in
   add t locals_count code (Env.get_value_locs env') (Env.get_call_map env') env
 
-let add_runtime env =
-  let block_type_idx, env =
-    env
-    |> Env.upsert_type
-         Wt.(
-           RecT
-             [ SubT (Final, [], DefFuncT (FuncT ([ any_type ], [ any_type ]))) ])
-  in
-  let array_type_idx, env = env |> Env.upsert_type array_type in
-  let sexp_type_idx, env = env |> Env.upsert_type (sexp_type array_type_idx) in
-  let _, env =
-    env
-    |> Env.add_function (Some "length")
-         (Wt.FuncT
-            ([ RefT (ref_type_of array_type_idx); any_type ], [ any_type ]))
-         0
-         [
-           phrase @@ Wa.LocalGet (get_idx 1);
-           phrase
-           @@ Wa.Block
-                ( VarBlockType (get_idx block_type_idx),
-                  [
-                    phrase
-                    @@ Wa.BrOnCastFail
-                         (get_idx 0, any_ref_type, ref_type_of sexp_type_idx);
-                    phrase
-                    @@ Wa.StructGet (get_idx sexp_type_idx, get_idx 1, None);
-                    phrase @@ Wa.ArrayLen;
-                    phrase @@ Wa.RefI31;
-                    phrase @@ Wa.Return;
-                  ] );
-           phrase @@ Wa.RefCast (NoNull, ArrayHT);
-           phrase @@ Wa.ArrayLen;
-           phrase @@ Wa.RefI31;
-         ]
-         Mi.empty Si.empty
-  in
-  env
-
-let compile ast =
-  let env = Env.empty in
-  let array_type_idx, env = env |> Env.upsert_type array_type in
-  let env = env |> Env.enter_scope in
-  let env =
-    env
-    |> Env.add_function_import "write"
-         (FuncT ([ RefT (ref_type_of array_type_idx); any_type ], [ any_type ]))
-  in
-  let env =
-    env
-    |> Env.add_function_import "read"
-         (FuncT ([ RefT (ref_type_of array_type_idx) ], [ any_type ]))
-  in
-  let env = add_runtime env in
-
+let compile ast env =
   match ast with
   | Expr.Scope (decls, instr) ->
       let env = env |> Env.enter_function in
@@ -1425,12 +1383,39 @@ let compile ast =
       env |> Env.assemble_module
   | _ -> report_error "expected root scope"
 
-let genast _ ((_, _), p) = compile p
+let start_build cmd ((imports, _), p) =
+  let paths = cmd#get_include_paths in
+  let env = Env.empty in
+  let env = env |> Env.enter_scope in
+  let array_type_idx, env = env |> Env.upsert_type array_type in
+  let env =
+    imports
+    |> List.map (fun i -> (i, Interface.find i paths))
+    |> List.fold_left
+         (fun env (m, (_, is)) ->
+           List.fold_left
+             (fun env i ->
+               match i with
+               | `Fun (name, args) ->
+                   let func_type =
+                     Wt.(
+                       FuncT
+                         ( RefT (ref_type_of array_type_idx)
+                           :: List.init args (fun _ -> any_type),
+                           [ any_type ] ))
+                   in
+                   env |> Env.add_function_import m name func_type
+               | _ -> env)
+             env is)
+         env
+  in
+  compile p env
 
 let build cmd prog =
-  let module' = genast cmd prog in
-  let oc = open_out (cmd#basename ^ ".wast") in
+  let module' = start_build cmd prog in
+  let oc = open_out (cmd#basename ^ ".wat") in
   Wasm.Print.module_ oc 80 module';
   close_out oc;
   Wasm.Valid.check_module module';
+  cmd#dump_file "i" (Interface.gen prog);
   cmd#dump_file "wasm" (Wasm.Encode.encode module')

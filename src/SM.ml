@@ -1023,7 +1023,7 @@ class env cmd imports =
             List.fold_left
               (fun env -> function
                 | `Variable name -> env#add_name name `Extern Mut
-                | `Fun name -> env#add_fun_name name `Extern
+                | `Fun (name, _) -> env#add_fun_name name `Extern
                 | _ -> env)
               env intfs)
           self imports
