@@ -206,16 +206,11 @@ module Result = struct
     let call_map = Mi.add func_idx call_map result.call_map in
     (func_idx, { result with types; functions; value_locs; call_map })
 
-  let upsert_helper name t locals_count body result =
-    match M.find_opt name result.helpers with
-    | None ->
-        let func_idx, result =
-          add_or_place_function None t locals_count body Mi.empty Si.empty
-            result
-        in
-        let helpers = M.add name func_idx result.helpers in
-        (func_idx, { result with helpers })
-    | Some func_idx -> (func_idx, result)
+  let add_helper name func_idx result =
+    let helpers = M.add name func_idx result.helpers in
+    { result with helpers }
+
+  let get_helper name result = M.find name result.helpers
 
   let export_function name idx result =
     let exports = ExportFunc (name, idx) :: result.exports in
@@ -432,7 +427,7 @@ module Result = struct
           (phrase
           @@ Wa.
                {
-                 etype = (Null, FuncHT);
+                 etype = (NoNull, FuncHT);
                  einit = [ phrase @@ [ phrase @@ Wa.RefFunc (get_idx idx) ] ];
                  emode = phrase Declarative;
                })
@@ -559,11 +554,12 @@ module Env = struct
     in
     (func_idx, { env with result; scopes })
 
-  let upsert_helper name t locals_count body env =
-    let func_idx, result =
-      Result.upsert_helper name t locals_count body env.result
-    in
-    (func_idx, { env with result })
+  let add_helper name t env =
+    let func_idx, result = Result.add_function_import "Std" name t env.result in
+    let result = Result.add_helper name func_idx result in
+    { env with result }
+
+  let get_helper name env = Result.get_helper name env.result
 
   let export_function name idx env =
     let result = Result.export_function name idx env.result in
@@ -661,109 +657,19 @@ module Env = struct
   let assemble_module env = Result.assemble_module env.result
 end
 
-let add_helper_elem env =
-  let block_type_idx, env =
-    env
-    |> Env.upsert_type
-         Wt.(
-           RecT
-             [ SubT (Final, [], DefFuncT (FuncT ([ any_type ], [ any_type ]))) ])
-  in
+let add_helpers env =
   let string_type_idx, env = env |> Env.upsert_type string_type in
-  let array_type_idx, env = env |> Env.upsert_type array_type in
-  let sexp_type_idx, env = env |> Env.upsert_type (sexp_type array_type_idx) in
   env
-  |> Env.upsert_helper "elem"
-       (* args: array, index *)
-       (* result: value *)
-       (Wt.FuncT ([ any_type; NumT I32T ], [ any_type ]))
-       0
-       [
-         phrase @@ Wa.LocalGet (get_idx 0);
-         phrase
-         @@ Wa.Block
-              ( VarBlockType (get_idx block_type_idx),
-                [
-                  phrase
-                  @@ Wa.BrOnCastFail
-                       (get_idx 0, any_ref_type, ref_type_of sexp_type_idx);
-                  phrase @@ Wa.StructGet (get_idx sexp_type_idx, get_idx 1, None);
-                  phrase @@ Wa.LocalGet (get_idx 1);
-                  phrase @@ Wa.ArrayGet (get_idx array_type_idx, None);
-                  phrase @@ Wa.Return;
-                ] );
-         phrase
-         @@ Wa.Block
-              ( VarBlockType (get_idx block_type_idx),
-                [
-                  phrase
-                  @@ Wa.BrOnCastFail
-                       (get_idx 0, any_ref_type, ref_type_of string_type_idx);
-                  phrase @@ Wa.LocalGet (get_idx 1);
-                  phrase @@ Wa.ArrayGet (get_idx string_type_idx, Some SX);
-                ]
-                @ box
-                @ [ phrase @@ Wa.Return ] );
-         phrase @@ Wa.RefCast (ref_type_of array_type_idx);
-         phrase @@ Wa.LocalGet (get_idx 1);
-         phrase @@ Wa.ArrayGet (get_idx array_type_idx, None);
-       ]
-
-let add_helper_assign env =
-  let block_type_idx, env =
-    env
-    |> Env.upsert_type
-         Wt.(
-           RecT
-             [ SubT (Final, [], DefFuncT (FuncT ([ any_type ], [ any_type ]))) ])
-  in
-  let string_type_idx, env = env |> Env.upsert_type string_type in
-  let array_type_idx, env = env |> Env.upsert_type array_type in
-  let sexp_type_idx, env = env |> Env.upsert_type (sexp_type array_type_idx) in
-  env
-  |> Env.upsert_helper "assign"
-       (* args: array, index, value *)
-       (* result: value *)
-       (Wt.FuncT ([ any_type; NumT I32T; any_type ], [ any_type ]))
-       0
-       [
-         phrase @@ Wa.LocalGet (get_idx 0);
-         phrase
-         @@ Wa.Block
-              ( VarBlockType (get_idx block_type_idx),
-                [
-                  phrase
-                  @@ Wa.BrOnCastFail
-                       (get_idx 0, any_ref_type, ref_type_of sexp_type_idx);
-                  phrase @@ Wa.StructGet (get_idx sexp_type_idx, get_idx 1, None);
-                  phrase @@ Wa.LocalGet (get_idx 1);
-                  phrase @@ Wa.LocalGet (get_idx 2);
-                  phrase @@ Wa.ArraySet (get_idx array_type_idx);
-                  phrase @@ Wa.LocalGet (get_idx 2);
-                  phrase @@ Wa.Return;
-                ] );
-         phrase
-         @@ Wa.Block
-              ( VarBlockType (get_idx block_type_idx),
-                [
-                  phrase
-                  @@ Wa.BrOnCastFail
-                       (get_idx 0, any_ref_type, ref_type_of string_type_idx);
-                  phrase @@ Wa.LocalGet (get_idx 1);
-                  phrase @@ Wa.LocalGet (get_idx 2);
-                ]
-                @ unbox
-                @ [
-                    phrase @@ Wa.ArraySet (get_idx string_type_idx);
-                    phrase @@ Wa.LocalGet (get_idx 2);
-                    phrase @@ Wa.Return;
-                  ] );
-         phrase @@ Wa.RefCast (ref_type_of array_type_idx);
-         phrase @@ Wa.LocalGet (get_idx 1);
-         phrase @@ Wa.LocalGet (get_idx 2);
-         phrase @@ Wa.ArraySet (get_idx array_type_idx);
-         phrase @@ Wa.LocalGet (get_idx 2);
-       ]
+  |> Env.add_helper "elem" (FuncT ([ any_type; NumT I32T ], [ any_type ]))
+  |> Env.add_helper "assign"
+       (FuncT ([ any_type; NumT I32T; any_type ], [ any_type ]))
+  |> Env.add_helper "strcmp"
+       (FuncT
+          ( [
+              RefT (ref_type_of string_type_idx);
+              RefT (ref_type_of string_type_idx);
+            ],
+            [ NumT I32T ] ))
 
 let rec compile_list env ast =
   match ast with
@@ -908,7 +814,7 @@ let rec compile_list env ast =
           @@ Printf.sprintf "trying to get, var with name \"%s\" not found" name
       )
   | Expr.Assign (Expr.Ref name, instr) -> (
-      let assign_func_idx, env = add_helper_assign env in
+      let assign_func_idx = env |> Env.get_helper "assign" in
       let env, code = compile_list env instr in
       let loc, env = env |> Env.get name in
       match loc with
@@ -931,7 +837,7 @@ let rec compile_list env ast =
           @@ Printf.sprintf "trying to set, var with name \"%s\" not found" name
       )
   | Expr.Assign (Expr.ElemRef (arr, index), instr) ->
-      let assign_func_idx, env = add_helper_assign env in
+      let assign_func_idx = env |> Env.get_helper "assign" in
       let env, arr_code = compile_list env arr in
       let env, index_code = compile_list env index in
       let env, code = compile_list env instr in
@@ -943,7 +849,7 @@ let rec compile_list env ast =
       let env, ref_code = compile_list env ref in
       let refs, env = env |> Env.stop_collecting_refs in
       let env, value_code = compile_list env value in
-      let assign_func_idx, env = add_helper_assign env in
+      let assign_func_idx = env |> Env.get_helper "assign" in
       let array_type_idx, env = env |> Env.upsert_type array_type in
       let type_idx, env = env |> Env.upsert_type stack_ref_type in
       let block_type_idx, env =
@@ -1098,7 +1004,7 @@ let rec compile_list env ast =
       let instr = Wa.ArrayNewData (get_idx type_idx, get_idx data_idx) in
       (env, [ phrase @@ get_const 0; phrase @@ get_const size; phrase @@ instr ])
   | Expr.Elem (arr, index) ->
-      let elem_func_idx, env = add_helper_elem env in
+      let elem_func_idx = env |> Env.get_helper "elem" in
       let env, arr_code = compile_list env arr in
       let env, index_code = compile_list env index in
       ( env,
@@ -1147,7 +1053,7 @@ let rec compile_list env ast =
   | Expr.Case (value, patterns, _, attr) ->
       let env, value_code = compile_list env value in
       let value_temp, env = env |> Env.add_unnamed_local in
-      let elem_func_idx, env = add_helper_elem env in
+      let elem_func_idx = env |> Env.get_helper "elem" in
       let rec compile_pattern env pattern path =
         let elem_code =
           [ phrase @@ Wa.LocalGet (get_idx value_temp) ]
@@ -1160,6 +1066,14 @@ let rec compile_list env ast =
                path
             |> List.flatten)
         in
+        let get_ref_test t =
+          elem_code
+          @ [
+              phrase @@ Wa.RefTest t;
+              phrase @@ get_test_op Eqz;
+              phrase @@ Wa.BrIf (get_idx 0);
+            ]
+        in
         match pattern with
         | Pattern.Sexp (tag, elems) ->
             let array_type_idx, env = env |> Env.upsert_type array_type in
@@ -1167,12 +1081,7 @@ let rec compile_list env ast =
               env |> Env.upsert_type (sexp_type array_type_idx)
             in
             let check_code =
-              elem_code
-              @ [
-                  phrase @@ Wa.RefTest (ref_type_of sexp_type_idx);
-                  phrase @@ get_test_op Eqz;
-                  phrase @@ Wa.BrIf (get_idx 0);
-                ]
+              get_ref_test (ref_type_of sexp_type_idx)
               @ elem_code
               @ [
                   phrase @@ Wa.RefCast (ref_type_of sexp_type_idx);
@@ -1204,14 +1113,35 @@ let rec compile_list env ast =
                    (env, check_code, bindings)
             in
             (env, check_code, bindings)
-        | Pattern.Const n ->
+        | Pattern.Array elems ->
+            let array_type_idx, env = env |> Env.upsert_type array_type in
             let check_code =
-              elem_code
+              get_ref_test (ref_type_of array_type_idx)
+              @ elem_code
               @ [
-                  phrase @@ Wa.RefTest (NoNull, I31HT);
-                  phrase @@ get_test_op Eqz;
+                  phrase @@ Wa.RefCast (ref_type_of array_type_idx);
+                  phrase @@ Wa.ArrayLen;
+                  phrase @@ get_const (List.length elems);
+                  phrase @@ get_compare Ne;
                   phrase @@ Wa.BrIf (get_idx 0);
                 ]
+            in
+            let bindings = [] in
+            let env, check_code, bindings =
+              elems
+              |> List.mapi (fun i elem -> (i, elem))
+              |> List.fold_left
+                   (fun (env, check_code, bindings) (i, elem) ->
+                     let env, check_code', bindings' =
+                       compile_pattern env elem (path @ [ i ])
+                     in
+                     (env, check_code @ check_code', bindings @ bindings'))
+                   (env, check_code, bindings)
+            in
+            (env, check_code, bindings)
+        | Pattern.Const n ->
+            let check_code =
+              get_ref_test (NoNull, I31HT)
               @ elem_code @ unbox
               @ [
                   phrase @@ get_const n;
@@ -1225,10 +1155,58 @@ let rec compile_list env ast =
             let env, check_code, bindings' = compile_pattern env inner path in
             (env, check_code, bindings @ bindings')
         | Pattern.Wildcard -> (env, [], [])
-        | _ ->
-            report_error
-            @@ Printf.sprintf "unsupported pattern %s\n"
-                 (GT.show Pattern.t pattern)
+        | Pattern.ClosureTag ->
+            let array_type_idx, env = env |> Env.upsert_type array_type in
+            let closure_type_idx, env =
+              env |> Env.upsert_type (closure_type array_type_idx)
+            in
+            let check_code = get_ref_test (ref_type_of closure_type_idx) in
+            (env, check_code, [])
+        | Pattern.StringTag ->
+            let string_type_idx, env = env |> Env.upsert_type string_type in
+            let check_code = get_ref_test (ref_type_of string_type_idx) in
+            (env, check_code, [])
+        | Pattern.SexpTag ->
+            let array_type_idx, env = env |> Env.upsert_type array_type in
+            let sexp_type_idx, env =
+              env |> Env.upsert_type (sexp_type array_type_idx)
+            in
+            let check_code = get_ref_test (ref_type_of sexp_type_idx) in
+            (env, check_code, [])
+        | Pattern.ArrayTag ->
+            let array_type_idx, env = env |> Env.upsert_type array_type in
+            let check_code = get_ref_test (ref_type_of array_type_idx) in
+            (env, check_code, [])
+        | Pattern.UnBoxed ->
+            let check_code = get_ref_test (NoNull, I31HT) in
+            (env, check_code, [])
+        | Pattern.Boxed ->
+            let check_code =
+              elem_code
+              @ [
+                  phrase @@ Wa.RefTest (NoNull, I31HT);
+                  phrase @@ Wa.BrIf (get_idx 0);
+                ]
+            in
+            (env, check_code, [])
+        | Pattern.String str ->
+            let string_type_idx, env = env |> Env.upsert_type string_type in
+            let data_idx, env = env |> Env.upsert_data str in
+            let strcmp_idx = env |> Env.get_helper "strcmp" in
+            let check_code =
+              get_ref_test (ref_type_of string_type_idx)
+              @ elem_code
+              @ [
+                  phrase @@ Wa.RefCast (ref_type_of string_type_idx);
+                  phrase @@ get_const 0;
+                  phrase @@ get_const (String.length str);
+                  phrase
+                  @@ Wa.ArrayNewData (get_idx string_type_idx, get_idx data_idx);
+                  phrase @@ Wa.Call (get_idx strcmp_idx);
+                  phrase @@ Wa.BrIf (get_idx 0);
+                ]
+            in
+            (env, check_code, [])
       in
       let env, blocks =
         patterns
@@ -1387,6 +1365,7 @@ let start_build cmd ((imports, _), p) =
   let paths = cmd#get_include_paths in
   let env = Env.empty in
   let env = env |> Env.enter_scope in
+  let env = add_helpers env in
   let array_type_idx, env = env |> Env.upsert_type array_type in
   let env =
     imports
