@@ -2,6 +2,9 @@
   (type $string_type (array (mut i8)))
   (type $array_type (array (mut (ref any))))
   (type $sexp_type (struct (field i32) (field (ref $array_type))))
+  ;; (import "Std" "write" (func $write (param (ref any)) (param (ref any)) (result (ref any))))
+
+  (memory (export "_memory") 1)
 
   ;; helpers
   (func (export "elem") (param $arr (ref any)) (param $index i32) (result (ref any))
@@ -60,10 +63,10 @@
       return
     ))
 
-    (block $outer
-      (loop
+    (block $exit
+      (loop $loop
         (i32.eqz (i32.lt_u (local.get $i) (array.len (local.get $str1))))
-        br_if $outer
+        br_if $exit
 
         (i32.sub
           (array.get_u $string_type (local.get $str1) (local.get $i))
@@ -75,11 +78,61 @@
           return
         ))
 
-        (i32.add (local.get $i) (i32.const 1))
-        local.set $i
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        br $loop
       )
     )
     i32.const 0
+  )
+  (func (export "is_string") (param $p (ref any)) (result i32)
+    local.get $p
+    ref.test (ref $string_type)
+  )
+  (func (export "to_memory") (param $str (ref $string_type)) (result i32)
+    (local $i i32)
+    (array.len (local.get $str))
+    (i32.div_u (i32.const 65536))
+    (i32.add (i32.const 1))
+    (i32.sub (memory.size))
+    (drop (memory.grow))
+
+    (block $exit
+      (loop $loop
+        (i32.eqz (i32.lt_u (local.get $i) (array.len (local.get $str))))
+        br_if $exit
+
+        local.get $i
+        (array.get_u $string_type (local.get $str) (local.get $i))
+        i32.store8
+
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        br $loop
+      )
+    )
+
+    (array.len (local.get $str))
+  )
+  (func (export "from_memory") (param $len i32) (result (ref any))
+    (local $arr (ref $string_type)) (local $i i32)
+    (array.new_default $string_type (local.get $len))
+    local.set $arr
+
+    (block $exit
+      (loop $loop
+        (i32.eqz (i32.lt_u (local.get $i) (local.get $len)))
+        br_if $exit
+
+        local.get $arr
+        local.get $i
+        (i32.load8_u (local.get $i))
+        array.set $string_type
+
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        br $loop
+      )
+    )
+
+    local.get $arr
   )
 
   ;; stdlib

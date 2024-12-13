@@ -1,18 +1,47 @@
 const fs = require("fs")
 const { argv } = require("process")
+const printf = require("./printf")
 
-const buffer = []
+const readBuffer = []
 
 function readNum() {
-    if (buffer.length == 0) {
+    if (readBuffer.length == 0) {
         const buf = Buffer.alloc(1024)
         const read = fs.readSync(0, buf)
         buf.subarray(0, read).toString().trim().split("\n").forEach(value => {
-            buffer.push(parseInt(value))
+            readBuffer.push(parseInt(value))
         })
     }
 
-    return buffer.shift()
+    return readBuffer.shift()
+}
+
+function toWasmString(str) {
+    const memory = runtime.Std._memory
+    const reqPages = Math.floor(str.length / 65536) + 1
+    const gotPages = Math.floor(memory.buffer.byteLength / 65536)
+    memory.grow(reqPages - gotPages)
+    const encoder = new TextEncoder()
+    encoder.encodeInto(str, new Uint8Array(memory.buffer))
+    return runtime.Std.from_memory(str.length)
+}
+
+function toJsString(pointer) {
+    const len = runtime.Std.to_memory(pointer)
+    const memory = runtime.Std._memory
+    const view = new DataView(memory.buffer, 0, len)
+    const decoder = new TextDecoder()
+    return decoder.decode(view)
+}
+
+function basePrintf(...args) {
+    const formatString = toJsString(args.shift())
+    for (let i = 0; i < args.length; i++) {
+        if (runtime.Std.is_string(args[i])) {
+            args[i] = toJsString(args[i])
+        }
+    }
+    return printf(formatString, ...args)
 }
 
 const runtime = {
@@ -24,6 +53,17 @@ const runtime = {
         "read": (_) => {
             fs.writeSync(1, "> ")
             return readNum()
+        },
+        "printf": (_, ...args) => {
+            process.stdout.write(basePrintf(...args))
+            return 0
+        },
+        "sprintf": (_, ...args) => {
+            const result = basePrintf(...args)
+            return toWasmString(result) 
+        },
+        "failure": (_, ...args) => {
+            throw new Error(basePrintf(...args))
         }
     }
 }

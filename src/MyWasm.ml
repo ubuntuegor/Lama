@@ -97,6 +97,7 @@ type w_value =
   | Local of int * int
   | Closure of int * int
   | Callable of int
+  | VarargImport
 [@@deriving gt ~options:{ show }]
 
 type w_export = ExportFunc of string * int (* name, func_idx *)
@@ -149,6 +150,7 @@ module Result = struct
     globals : int;
     exports : w_export list;
     helpers : int M.t;
+    vararg_imports : int M.t;
     all_locals : int;
     declared_func_refs : Si.t;
   }
@@ -163,6 +165,7 @@ module Result = struct
       globals = 0;
       exports = [];
       helpers = M.empty;
+      vararg_imports = M.empty;
       all_locals = 0;
       declared_func_refs = Si.empty;
     }
@@ -206,11 +209,21 @@ module Result = struct
     let call_map = Mi.add func_idx call_map result.call_map in
     (func_idx, { result with types; functions; value_locs; call_map })
 
-  let add_helper name func_idx result =
+  let add_helper name t result =
+    let func_idx, result = add_function_import "Std" name t result in
     let helpers = M.add name func_idx result.helpers in
     { result with helpers }
 
   let get_helper name result = M.find name result.helpers
+
+  let get_vararg_import name args t result =
+    let key = Printf.sprintf "%s$%d" name args in
+    match M.find_opt key result.vararg_imports with
+    | Some func_idx -> (func_idx, result)
+    | None ->
+        let func_idx, result = add_function_import "Std" name t result in
+        let vararg_imports = M.add key func_idx result.vararg_imports in
+        (func_idx, { result with vararg_imports })
 
   let export_function name idx result =
     let exports = ExportFunc (name, idx) :: result.exports in
@@ -514,6 +527,14 @@ module Env = struct
     let scopes = bind name (Callable func_idx) env.scopes in
     { env with result; scopes }
 
+  let add_vararg_import name env =
+    let scopes = bind name VarargImport env.scopes in
+    { env with scopes }
+
+  let get_vararg_import name args t env =
+    let func_idx, result = env.result |> Result.get_vararg_import name args t in
+    (func_idx, { env with result })
+
   let allocate_functions names env =
     let start_idx, result =
       Result.allocate_functions (List.length names) env.result
@@ -555,8 +576,7 @@ module Env = struct
     (func_idx, { env with result; scopes })
 
   let add_helper name t env =
-    let func_idx, result = Result.add_function_import "Std" name t env.result in
-    let result = Result.add_helper name func_idx result in
+    let result = Result.add_helper name t env.result in
     { env with result }
 
   let get_helper name env = Result.get_helper name env.result
@@ -638,7 +658,9 @@ module Env = struct
           | None -> inner name xs
           | found -> if List.length scopes <= 2 then found else None)
     in
-    match inner name env.scopes with Some (Callable _) -> true | _ -> false
+    match inner name env.scopes with
+    | Some (Callable _ | VarargImport) -> true
+    | _ -> false
 
   let expand_closures env =
     let result = Result.expand_closures env.result in
@@ -673,25 +695,35 @@ let add_helpers env =
 
 let rec compile_list env ast =
   match ast with
-  | Expr.Call (Expr.Var name, args) when Env.is_global_func name env -> (
+  | Expr.Call (Expr.Var name, args) when Env.is_global_func name env ->
+      let array_type_idx, env = env |> Env.upsert_type array_type in
       let loc, env = env |> Env.get name in
-      match loc with
-      | Some (Callable func_idx) ->
-          let array_type_idx, env = env |> Env.upsert_type array_type in
-          let args_code, env =
-            List.fold_left
-              (fun (acc, env) arg ->
-                let env, code = compile_list env arg in
-                (acc @ code, env))
-              ([], env) args
-          in
-          ( env,
-            [
-              phrase @@ Wa.ArrayNewFixed (get_idx array_type_idx, Int32.of_int 0);
-            ]
-            @ args_code
-            @ [ phrase @@ Wa.Call (get_idx func_idx) ] )
-      | _ -> report_error "simplified function call failed")
+      let func_idx, env =
+        match loc with
+        | Some (Callable func_idx) -> (func_idx, env)
+        | Some VarargImport ->
+            let args_len = List.length args in
+            let t =
+              Wt.(
+                FuncT
+                  ( RefT (ref_type_of array_type_idx)
+                    :: List.init args_len (fun _ -> any_type),
+                    [ any_type ] ))
+            in
+            env |> Env.get_vararg_import name args_len t
+        | _ -> report_error "simplified function call failed"
+      in
+      let args_code, env =
+        List.fold_left
+          (fun (acc, env) arg ->
+            let env, code = compile_list env arg in
+            (acc @ code, env))
+          ([], env) args
+      in
+      ( env,
+        [ phrase @@ Wa.ArrayNewFixed (get_idx array_type_idx, Int32.of_int 0) ]
+        @ args_code
+        @ [ phrase @@ Wa.Call (get_idx func_idx) ] )
   | Expr.Call (name, args) ->
       let env, name_code = compile_list env name in
       let name_temp, env = env |> Env.add_unnamed_local in
@@ -999,6 +1031,7 @@ let rec compile_list env ast =
       (env' |> Env.exit_scope, code)
   | Expr.String str ->
       let type_idx, env = env |> Env.upsert_type string_type in
+      let str = Scanf.unescaped str in
       let data_idx, env = env |> Env.upsert_data str in
       let size = String.length str in
       let instr = Wa.ArrayNewData (get_idx type_idx, get_idx data_idx) in
@@ -1191,6 +1224,7 @@ let rec compile_list env ast =
             (env, check_code, [])
         | Pattern.String str ->
             let string_type_idx, env = env |> Env.upsert_type string_type in
+            let str = Scanf.unescaped str in
             let data_idx, env = env |> Env.upsert_data str in
             let strcmp_idx = env |> Env.get_helper "strcmp" in
             let check_code =
@@ -1375,6 +1409,8 @@ let start_build cmd ((imports, _), p) =
            List.fold_left
              (fun env i ->
                match i with
+               | `Fun (name, args) when args < 0 ->
+                   env |> Env.add_vararg_import name
                | `Fun (name, args) ->
                    let func_type =
                      Wt.(
