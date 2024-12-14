@@ -94,10 +94,9 @@ type w_func =
 
 type w_value =
   | Global of int
-  | Local of int * int
-  | Closure of int * int
-  | Callable of int
-  | VarargImport
+  | Local of int * int (* idx, all_locals_idx *)
+  | Closure of int * int (* idx, all_locals_idx *)
+  | Callable of int * bool (* func_idx, is_vararg *)
 [@@deriving gt ~options:{ show }]
 
 type w_export = ExportFunc of string * int (* name, func_idx *)
@@ -150,7 +149,6 @@ module Result = struct
     globals : int;
     exports : w_export list;
     helpers : int M.t;
-    vararg_imports : int M.t;
     all_locals : int;
     declared_func_refs : Si.t;
   }
@@ -165,7 +163,6 @@ module Result = struct
       globals = 0;
       exports = [];
       helpers = M.empty;
-      vararg_imports = M.empty;
       all_locals = 0;
       declared_func_refs = Si.empty;
     }
@@ -209,21 +206,11 @@ module Result = struct
     let call_map = Mi.add func_idx call_map result.call_map in
     (func_idx, { result with types; functions; value_locs; call_map })
 
-  let add_helper name t result =
-    let func_idx, result = add_function_import "Std" name t result in
+  let add_helper name func_idx result =
     let helpers = M.add name func_idx result.helpers in
     { result with helpers }
 
   let get_helper name result = M.find name result.helpers
-
-  let get_vararg_import name args t result =
-    let key = Printf.sprintf "%s$%d" name args in
-    match M.find_opt key result.vararg_imports with
-    | Some func_idx -> (func_idx, result)
-    | None ->
-        let func_idx, result = add_function_import "Std" name t result in
-        let vararg_imports = M.add key func_idx result.vararg_imports in
-        (func_idx, { result with vararg_imports })
 
   let export_function name idx result =
     let exports = ExportFunc (name, idx) :: result.exports in
@@ -520,20 +507,12 @@ module Env = struct
     let result, scopes, closures, value_locs = inner name env.scopes in
     (result, { env with scopes; closures; value_locs })
 
-  let add_function_import module_name name t env =
+  let add_function_import module_name name vararg t env =
     let func_idx, result =
       Result.add_function_import module_name name t env.result
     in
-    let scopes = bind name (Callable func_idx) env.scopes in
+    let scopes = bind name (Callable (func_idx, vararg)) env.scopes in
     { env with result; scopes }
-
-  let add_vararg_import name env =
-    let scopes = bind name VarargImport env.scopes in
-    { env with scopes }
-
-  let get_vararg_import name args t env =
-    let func_idx, result = env.result |> Result.get_vararg_import name args t in
-    (func_idx, { env with result })
 
   let allocate_functions names env =
     let start_idx, result =
@@ -541,7 +520,8 @@ module Env = struct
     in
     let _, scopes =
       List.fold_left
-        (fun (idx, scopes) name -> (idx + 1, bind name (Callable idx) scopes))
+        (fun (idx, scopes) name ->
+          (idx + 1, bind name (Callable (idx, false)) scopes))
         (start_idx, env.scopes) names
     in
     { env with result; scopes }
@@ -550,7 +530,7 @@ module Env = struct
     let loc, env = get name env in
     let func_idx =
       match loc with
-      | Some (Callable x) -> x
+      | Some (Callable (x, _)) -> x
       | _ ->
           report_error
           @@ Printf.sprintf "function \"%s\" not allocated before placement"
@@ -570,13 +550,14 @@ module Env = struct
     in
     let scopes =
       match name with
-      | Some name -> env.scopes |> bind name (Callable func_idx)
+      | Some name -> env.scopes |> bind name (Callable (func_idx, false))
       | _ -> env.scopes
     in
     (func_idx, { env with result; scopes })
 
   let add_helper name t env =
-    let result = Result.add_helper name t env.result in
+    let func_idx, result = Result.add_function_import "Std" name t env.result in
+    let result = Result.add_helper name func_idx result in
     { env with result }
 
   let get_helper name env = Result.get_helper name env.result
@@ -658,9 +639,7 @@ module Env = struct
           | None -> inner name xs
           | found -> if List.length scopes <= 2 then found else None)
     in
-    match inner name env.scopes with
-    | Some (Callable _ | VarargImport) -> true
-    | _ -> false
+    match inner name env.scopes with Some (Callable _) -> true | _ -> false
 
   let expand_closures env =
     let result = Result.expand_closures env.result in
@@ -702,34 +681,33 @@ let rec compile_list env ast =
   in
   let stack_ref_type_idx, env = env |> Env.upsert_type stack_ref_type in
   match ast with
-  | Expr.Call (Expr.Var name, args) when Env.is_global_func name env ->
+  | Expr.Call (Expr.Var name, args) when Env.is_global_func name env -> (
       let loc, env = env |> Env.get name in
-      let func_idx, env =
-        match loc with
-        | Some (Callable func_idx) -> (func_idx, env)
-        | Some VarargImport ->
-            let args_len = List.length args in
-            let t =
-              Wt.(
-                FuncT
-                  ( RefT (ref_type_of array_type_idx)
-                    :: List.init args_len (fun _ -> any_type),
-                    [ any_type ] ))
-            in
-            env |> Env.get_vararg_import name args_len t
-        | _ -> report_error "simplified function call failed"
-      in
-      let args_code, env =
-        List.fold_left
-          (fun (acc, env) arg ->
-            let env, code = compile_list env arg in
-            (acc @ code, env))
-          ([], env) args
-      in
-      ( env,
-        [ phrase @@ Wa.ArrayNewFixed (get_idx array_type_idx, Int32.of_int 0) ]
-        @ args_code
-        @ [ phrase @@ Wa.Call (get_idx func_idx) ] )
+      match loc with
+      | Some (Callable (func_idx, vararg)) ->
+          let args_code, env =
+            List.fold_left
+              (fun (acc, env) arg ->
+                let env, code = compile_list env arg in
+                (acc @ code, env))
+              ([], env) args
+          in
+          let varargs_to_array =
+            if vararg then
+              [
+                phrase
+                @@ Wa.ArrayNewFixed
+                     (get_idx array_type_idx, Int32.of_int (List.length args));
+              ]
+            else []
+          in
+          ( env,
+            [
+              phrase @@ Wa.ArrayNewFixed (get_idx array_type_idx, Int32.of_int 0);
+            ]
+            @ args_code @ varargs_to_array
+            @ [ phrase @@ Wa.Call (get_idx func_idx) ] )
+      | _ -> report_error "simplified function call failed")
   | Expr.Call (name, args) ->
       let env, name_code = compile_list env name in
       let name_temp, env = env |> Env.add_unnamed_local in
@@ -838,7 +816,7 @@ let rec compile_list env ast =
               phrase @@ get_const index;
               phrase @@ Wa.ArrayGet (get_idx array_type_idx, None);
             ] )
-      | Some (Callable func_idx) ->
+      | Some (Callable (func_idx, false)) ->
           let env = env |> Env.register_call func_idx in
           (* placeholder for creating a closure in 2nd pass *)
           (env, [ phrase @@ Wa.ElemDrop (get_idx func_idx) ])
@@ -1387,7 +1365,16 @@ let start_build cmd ((imports, _), p) =
              (fun env i ->
                match i with
                | `Fun (name, args) when args < 0 ->
-                   env |> Env.add_vararg_import name
+                   let func_type =
+                     Wt.(
+                       FuncT
+                         ( [
+                             RefT (ref_type_of array_type_idx);
+                             RefT (ref_type_of array_type_idx);
+                           ],
+                           [ any_type ] ))
+                   in
+                   env |> Env.add_function_import m name true func_type
                | `Fun (name, args) ->
                    let func_type =
                      Wt.(
@@ -1396,7 +1383,7 @@ let start_build cmd ((imports, _), p) =
                            :: List.init args (fun _ -> any_type),
                            [ any_type ] ))
                    in
-                   env |> Env.add_function_import m name func_type
+                   env |> Env.add_function_import m name false func_type
                | _ -> env)
              env is)
          env

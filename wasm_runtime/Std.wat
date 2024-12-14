@@ -1,10 +1,12 @@
 (module
   (type $string_type (array (mut i8)))
   (type $array_type (array (mut (ref any))))
+  (type $closure_type (struct (field (ref func)) (field (ref $array_type))))
   (type $sexp_type (struct (field i32) (field (ref $array_type))))
   ;; (import "Std" "write" (func $write (param (ref any)) (param (ref any)) (result (ref any))))
 
   (memory (export "_memory") 1)
+  (table $tbl (export "_table") 0 (ref any) i32.const 0 ref.i31)
 
   ;; helpers
   (func (export "elem") (param $arr (ref any)) (param $index i32) (result (ref any))
@@ -88,7 +90,53 @@
     local.get $p
     ref.test (ref $string_type)
   )
-  (func (export "to_memory") (param $str (ref $string_type)) (result i32)
+  (func (export "is_closure") (param $p (ref any)) (result i32)
+    local.get $p
+    ref.test (ref $closure_type)
+  )
+  (func (export "is_array") (param $p (ref any)) (result i32)
+    local.get $p
+    ref.test (ref $array_type)
+  )
+  (func (export "is_sexp") (param $p (ref any)) (result i32)
+    local.get $p
+    ref.test (ref $sexp_type)
+  )
+  (func $array_to_table (export "array_to_table") (param $arr (ref $array_type)) (result i32)
+    (local $i i32)
+    (ref.i31 (i32.const 0))
+    (array.len (local.get $arr))
+    (i32.sub (table.size $tbl))
+    (drop (table.grow $tbl))
+
+    (block $exit
+      (loop $loop
+        (i32.eqz (i32.lt_u (local.get $i) (array.len (local.get $arr))))
+        br_if $exit
+
+        local.get $i
+        (array.get $array_type (local.get $arr) (local.get $i))
+        table.set $tbl
+
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        br $loop
+      )
+    )
+
+    (array.len (local.get $arr))
+  )
+  (func (export "closure_to_table") (param $clo (ref $closure_type)) (result i32)
+    (struct.get $closure_type 1 (local.get $clo))
+    call $array_to_table
+  )
+  (func (export "sexp_to_table") (param $sexp (ref $sexp_type)) (result i32)
+    (struct.get $sexp_type 1 (local.get $sexp))
+    call $array_to_table
+  )
+  (func (export "sexp_to_tag") (param $sexp (ref $sexp_type)) (result i32)
+    (struct.get $sexp_type 0 (local.get $sexp))
+  )
+  (func (export "string_to_memory") (param $str (ref $string_type)) (result i32)
     (local $i i32)
     (array.len (local.get $str))
     (i32.div_u (i32.const 65536))
@@ -112,7 +160,7 @@
 
     (array.len (local.get $str))
   )
-  (func (export "from_memory") (param $len i32) (result (ref any))
+  (func (export "string_from_memory") (param $len i32) (result (ref $string_type))
     (local $arr (ref $string_type)) (local $i i32)
     (array.new_default $string_type (local.get $len))
     local.set $arr
@@ -148,5 +196,10 @@
     ref.cast (ref array)
     array.len
     ref.i31
+  )
+  (func (export "makeArray") (param (ref $array_type)) (param $len (ref any)) (result (ref any))
+    (ref.i31 (i32.const 0))
+    (i31.get_s (ref.cast (ref i31) (local.get $len)))
+    array.new $array_type
   )
 )

@@ -4,7 +4,7 @@ FILES=$(wildcard *.lama)
 ALL=$(sort $(FILES:.lama=.o))
 LAMAC=../src/lamac -g
 
-all: $(ALL)
+all: $(ALL) wasm
 
 Fun.o: Ref.o
 
@@ -23,7 +23,12 @@ STM.o: List.o Fun.o
 %.o: %.lama
 	LAMA=../runtime $(LAMAC) -I . -c $<
 
+%.wasm: %.lama
+	LAMA=../wasm_runtime $(LAMAC) -I . -wasm $<
+
+wasm: Lazy.wasm Ref.wasm Fun.wasm
+
 clean:
-	rm -Rf *.s *.o *.i *~
+	rm -Rf *.s *.o *.i *~ *.wasm *.wat
 	pushd regression && make clean && popd
 
