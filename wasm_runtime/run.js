@@ -172,9 +172,9 @@ async function main() {
   const stdModule = await WebAssembly.instantiate(fs.readFileSync(__dirname + "/Std.wasm"), runtime)
   runtime.Std = { ...runtime.Std, ...stdModule.instance.exports }
 
-  loadLib("Lazy")
-  loadLib("Ref")
-  loadLib("Fun")
+  await loadLib("Lazy")
+  await loadLib("Ref")
+  await loadLib("Fun")
 
   const mainModule = await WebAssembly.instantiate(fs.readFileSync(filePath), runtime)
   mainModule.instance.exports.main()
