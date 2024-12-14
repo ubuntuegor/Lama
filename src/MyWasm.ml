@@ -287,16 +287,14 @@ module Result = struct
         |> List.sort (fun a b ->
                match (a, b) with
                | Closure (a, _), Closure (b, _) -> a - b
-               | _ ->
-                   report_error
-                     "this is impossible because the list is filtered")
+               | _ -> report_error "impossible because the list is filtered")
       in
       let collect_locs =
         to_collect
         |> List.map (fun loc ->
                match loc with
                | Closure (_, local_idx) -> Mi.find local_idx caller_locs
-               | _ -> report_error "still impossible")
+               | _ -> report_error "impossible because the list is filtered")
       in
       let collect_code =
         List.fold_left
@@ -307,7 +305,7 @@ module Result = struct
               | Closure (index, _) ->
                   [
                     phrase @@ Wa.LocalGet (get_idx 0);
-                    phrase @@ get_const index;
+                    phrase @@ get_const (index + 1);
                     phrase @@ Wa.ArrayGet (get_idx array_type_idx, None);
                   ]
               | _ -> report_error "mission impossible"
@@ -315,12 +313,13 @@ module Result = struct
             acc @ code)
           [] collect_locs
       in
-      [ phrase @@ Wa.RefFunc (get_idx idx) ]
-      @ collect_code
+      [ phrase @@ Wa.RefFunc (get_idx idx); phrase @@ get_const idx ]
+      @ box @ collect_code
       @ [
           phrase
           @@ Wa.ArrayNewFixed
-               (get_idx array_type_idx, Int32.of_int (List.length collect_locs));
+               ( get_idx array_type_idx,
+                 Int32.of_int (List.length collect_locs + 1) );
           phrase @@ Wa.StructNew (get_idx closure_type_idx, Explicit);
         ]
     in
@@ -813,7 +812,7 @@ let rec compile_list env ast =
           ( env,
             [
               phrase @@ Wa.LocalGet (get_idx 0);
-              phrase @@ get_const index;
+              phrase @@ get_const (index + 1);
               phrase @@ Wa.ArrayGet (get_idx array_type_idx, None);
             ] )
       | Some (Callable (func_idx, false)) ->
@@ -840,7 +839,9 @@ let rec compile_list env ast =
           (env, code @ [ phrase @@ Wa.LocalTee (get_idx index) ])
       | Some (Closure (index, _)) ->
           ( env,
-            [ phrase @@ Wa.LocalGet (get_idx 0); phrase @@ get_const index ]
+            [
+              phrase @@ Wa.LocalGet (get_idx 0); phrase @@ get_const (index + 1);
+            ]
             @ code
             @ [ phrase @@ Wa.Call (get_idx assign_func_idx) ] )
       | _ ->
@@ -893,7 +894,7 @@ let rec compile_list env ast =
                           | Closure (idx, _) ->
                               [
                                 phrase @@ Wa.LocalGet (get_idx 0);
-                                phrase @@ get_const idx;
+                                phrase @@ get_const (idx + 1);
                                 phrase @@ Wa.LocalGet (get_idx value_temp);
                                 phrase @@ Wa.ArraySet (get_idx array_type_idx);
                               ]

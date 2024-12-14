@@ -19,6 +19,13 @@
       return
     )
     (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $closure_type)
+      struct.get $closure_type 1
+      local.get $index
+      array.get $array_type
+      return
+    )
+    (block (param (ref any)) (result (ref any))
       br_on_cast_fail 0 (ref any) (ref $string_type)
       local.get $index
       array.get_s $string_type
@@ -189,6 +196,13 @@
     (block (param (ref any)) (result (ref any))
       br_on_cast_fail 0 (ref any) (ref $sexp_type)
       struct.get $sexp_type 1
+      array.len
+      ref.i31
+      return
+    )
+    (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $closure_type)
+      struct.get $closure_type 1
       array.len
       ref.i31
       return
