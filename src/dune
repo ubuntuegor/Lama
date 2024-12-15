@@ -46,7 +46,7 @@
 (library
  (name liba)
  (modules Language Pprinter stdpath version X86 MyWasm SM)
- (libraries GT ostap wasm)
+ (libraries GT ostap wasm str)
  (flags
   (:standard
    -rectypes

@@ -18,6 +18,15 @@ let any_ref_type = Wt.(NoNull, AnyHT)
 let any_type = Wt.(RefT (NoNull, AnyHT))
 let ref_type_of n = Wt.(NoNull, VarHT (StatX (Int32.of_int n)))
 
+let unescape_string str =
+  str
+  |> Str.global_substitute (Str.regexp {|\\\(.\)|}) (fun s ->
+         match Str.matched_group 1 s with
+         | "n" -> "\n"
+         | "t" -> "\t"
+         | "r" -> "\r"
+         | x -> x)
+
 let string_type =
   Wt.(
     RecT
@@ -1017,7 +1026,7 @@ let rec compile_list env ast =
       let env', code = compile_scope decls instr false env' in
       (env' |> Env.exit_scope, code)
   | Expr.String str ->
-      let str = Scanf.unescaped str in
+      let str = unescape_string str in
       let data_idx, env = env |> Env.upsert_data str in
       let size = String.length str in
       let instr = Wa.ArrayNewData (get_idx string_type_idx, get_idx data_idx) in
@@ -1189,7 +1198,7 @@ let rec compile_list env ast =
             in
             (env, check_code, [])
         | Pattern.String str ->
-            let str = Scanf.unescaped str in
+            let str = unescape_string str in
             let data_idx, env = env |> Env.upsert_data str in
             let strcmp_idx = env |> Env.get_helper "strcmp" in
             let check_code =
@@ -1368,6 +1377,7 @@ let start_build cmd ((imports, _), p) =
   let array_type_idx, env = env |> Env.upsert_type array_type in
   let env =
     imports
+    |> List.sort_uniq String.compare
     |> List.map (fun i -> (i, Interface.find i paths))
     |> List.fold_left
          (fun env (m, (_, is)) ->

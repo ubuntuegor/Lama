@@ -95,6 +95,7 @@ function basePrintf(args) {
 
 let lastAddress = 0;
 const addressSpace = new Map();
+const regexps = [];
 
 const runtime = {
   "Std": {
@@ -174,6 +175,24 @@ const runtime = {
       if (!addressSpace.has(p)) addressSpace.set(p, lastAddress++)
       if (!addressSpace.has(q)) addressSpace.set(q, lastAddress++)
       return addressSpace.get(p) - addressSpace.get(q)
+    },
+    "regexp": (_, pattern) => {
+      const regexp = new RegExp(externalizeString(pattern))
+      regexps.push(regexp)
+      return regexps.length - 1
+    },
+    "regexpMatch": (_, pointer, haystack, start) => {
+      const regexp = regexps[pointer]
+      const result = regexp.exec(externalizeString(haystack).slice(start))
+      return result ? result[0].length : -1
+    },
+    "matchSubString": (_, subj, patt, pos) => {
+      subj = externalizeString(subj)
+      patt = externalizeString(patt)
+      return +subj.startsWith(patt, pos)
+    },
+    "random": (_, to) => {
+      return Math.floor(Math.random() * to)
     }
   }
 }
@@ -198,6 +217,9 @@ async function main() {
   await loadLib("Buffer")
   await loadLib("Collection")
   await loadLib("Data")
+  await loadLib("Matcher")
+  await loadLib("Random")
+  await loadLib("Ostap")
 
   const mainModule = await WebAssembly.instantiate(fs.readFileSync(filePath), runtime)
   mainModule.instance.exports.main()

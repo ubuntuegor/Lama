@@ -229,10 +229,10 @@ fun createResult () {
     | Fail (err, l, c) ->
         if deref (hasError)
         then
-          var c = compare ([line, col], [l, c]);
+          var r = compare ([line, col], [l, c]);
 
-          if   c == 0 then errors ::= err : deref (errors)
-          elif c <  0 then errors ::= {err}; line ::= l; col ::= c
+          if   r == 0 then errors ::= err : deref (errors)
+          elif r <  0 then errors ::= {err}; line ::= l; col ::= c
           fi
         else
           hasError ::= true;

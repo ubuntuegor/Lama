@@ -215,53 +215,150 @@
 
     (return (local.get $new_arr))
   )
-
-  ;; stdlib
-  (func (export "length") (param (ref $array_type)) (param $arg (ref any)) (result (ref any))
+  (func $length (param $arg (ref any)) (result i32)
     local.get $arg
     (block (param (ref any)) (result (ref any))
       br_on_cast_fail 0 (ref any) (ref $sexp_type)
       struct.get $sexp_type 1
-      array.len
-      ref.i31
-      return
+      (return (array.len))
     )
     (block (param (ref any)) (result (ref any))
       br_on_cast_fail 0 (ref any) (ref $closure_type)
       struct.get $closure_type 1
-      array.len
-      ref.i31
-      return
+      (return (array.len))
     )
     ref.cast (ref array)
     array.len
-    ref.i31
+  )
+  (func $kindOf (param $p (ref any)) (result i32)
+    local.get $p
+    (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $string_type)
+      (return (i32.const 1))
+    )
+    (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $array_type)
+      (return (i32.const 3))
+    )
+    (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $sexp_type)
+      (return (i32.const 5))
+    )
+    (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $closure_type)
+      (return (i32.const 7))
+    )
+    ref.cast (ref i31)
+    (return (i32.const 9))
+  )
+  (func $hash_append (param $x i32) (param $acc i32) (result i32)
+    (i32.add (local.get $acc) (local.get $x))
+    (i32.shl (i32.const 16))
+    (i32.add (local.get $acc) (local.get $x))
+    (i32.shr_u (i32.const 16))
+    i32.or
+  )
+  (func $hash_string (param $str (ref $string_type)) (param $acc i32) (result i32)
+    (local $i i32)
+    (block $exit
+      (loop $loop
+        (i32.eqz (i32.lt_u (local.get $i) (array.len (local.get $str))))
+        br_if $exit
+
+        (array.get_s $string_type (local.get $str) (local.get $i))
+        local.get $acc
+        (local.set $acc (call $hash_append))
+
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        br $loop
+      )
+    )
+
+    local.get $acc
+  )
+  (func $inner_hash (param $depth i32) (param $acc i32) (param $p (ref any)) (result i32)
+    (local $arr (ref $array_type)) (local $i i32)
+    (if (i32.gt_s (local.get $depth) (i32.const 3))
+    (then
+      (return (local.get $acc))
+    ))
+
+    (drop (block (result (ref any))
+      (br_on_cast_fail 0 (ref any) (ref i31) (local.get $p))
+      i31.get_s
+      local.get $acc
+      (return (call $hash_append))
+    ))
+
+    (local.set $acc (call $hash_append (call $kindOf (local.get $p)) (local.get $acc)))
+    (local.set $acc (call $hash_append (call $length (local.get $p)) (local.get $acc)))
+
+    (block $outer (result (ref $array_type))
+      local.get $p
+      (block (param (ref any)) (result (ref any))
+        br_on_cast_fail 0 (ref any) (ref $string_type)
+        local.get $acc
+        (return (call $hash_string))
+      )
+      (block (param (ref any)) (result (ref any))
+        br_on_cast_fail 0 (ref any) (ref $array_type)
+        br $outer
+      )
+      (block (param (ref any)) (result (ref any))
+        br_on_cast_fail 0 (ref any) (ref $sexp_type)
+        struct.get $sexp_type 0
+        local.get $acc
+        (local.set $acc (call $hash_append))
+
+        (ref.cast (ref $sexp_type) (local.get $p))
+        struct.get $sexp_type 1
+        br $outer
+      )
+      (block (param (ref any)) (result (ref any))
+        br_on_cast_fail 0 (ref any) (ref $closure_type)
+        struct.get $closure_type 1
+        br $outer
+      )
+      unreachable
+    )
+
+    local.set $arr
+
+    (block $exit
+      (loop $loop
+        (i32.eqz (i32.lt_u (local.get $i) (array.len (local.get $arr))))
+        br_if $exit
+
+        (i32.add (local.get $depth) (i32.const 1))
+        local.get $acc
+        (array.get $array_type (local.get $arr) (local.get $i))
+        call $inner_hash
+        local.set $acc
+
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        br $loop
+      )
+    )
+
+    local.get $acc
+  )
+
+  ;; stdlib
+  (func (export "length") (param (ref $array_type)) (param $arg (ref any)) (result (ref any))
+    (ref.i31 (call $length (local.get $arg)))
   )
   (func (export "makeArray") (param (ref $array_type)) (param $len (ref any)) (result (ref any))
     (ref.i31 (i32.const 0))
     (i31.get_s (ref.cast (ref i31) (local.get $len)))
     array.new $array_type
   )
-  (func $kindOf (export "kindOf") (param (ref $array_type)) (param $p (ref any)) (result (ref any))
-    local.get $p
-    (block (param (ref any)) (result (ref any))
-      br_on_cast_fail 0 (ref any) (ref $string_type)
-      (return (ref.i31 (i32.const 1)))
-    )
-    (block (param (ref any)) (result (ref any))
-      br_on_cast_fail 0 (ref any) (ref $array_type)
-      (return (ref.i31 (i32.const 3)))
-    )
-    (block (param (ref any)) (result (ref any))
-      br_on_cast_fail 0 (ref any) (ref $sexp_type)
-      (return (ref.i31 (i32.const 5)))
-    )
-    (block (param (ref any)) (result (ref any))
-      br_on_cast_fail 0 (ref any) (ref $closure_type)
-      (return (ref.i31 (i32.const 7)))
-    )
-    ref.cast (ref i31)
-    (return (ref.i31 (i32.const 9)))
+  (func (export "makeString") (param (ref $array_type)) (param $len (ref any)) (result (ref any))
+    i32.const 0
+    (i31.get_s (ref.cast (ref i31) (local.get $len)))
+    array.new $string_type
+  )
+  (func (export "kindOf") (param (ref $array_type)) (param $p (ref any)) (result (ref any))
+    (return (ref.i31 (call $kindOf (local.get $p))))
   )
   (func $compare (export "compare") (param (ref $array_type)) (param $p (ref any)) (param $q (ref any)) (result (ref any))
     (local $tmp i32) (local $i i32) (local $pa (ref $array_type)) (local $qa (ref $array_type))
@@ -288,8 +385,8 @@
     )
     drop
 
-    (i31.get_s (ref.cast (ref i31) (call $kindOf (array.new_fixed $array_type 0) (local.get $p))))
-    (i31.get_s (ref.cast (ref i31) (call $kindOf (array.new_fixed $array_type 0) (local.get $q))))
+    (call $kindOf (local.get $p))
+    (call $kindOf (local.get $q))
     i32.sub
     local.tee $tmp
     (if (then
@@ -536,5 +633,27 @@
     local.get $b
     array.new_fixed $array_type 2
     struct.new $sexp_type
+  )
+  (func (export "substring") (param (ref $array_type)) (param $str (ref any)) (param $pos (ref any)) (param $len (ref any)) (result (ref any))
+    (local $res (ref $string_type))
+    i32.const 0
+    (i31.get_s (ref.cast (ref i31) (local.get $len)))
+    array.new $string_type
+    local.set $res
+
+    (array.copy $string_type $string_type
+      (local.get $res)
+      (i32.const 0)
+      (ref.cast (ref $string_type) (local.get $str))
+      (i31.get_s (ref.cast (ref i31) (local.get $pos)))
+      (array.len (local.get $res))
+    )
+
+    local.get $res
+  )
+  (func (export "hash") (param (ref $array_type)) (param $p (ref any)) (result (ref any))
+    (call $inner_hash (i32.const 0) (i32.const 0) (local.get $p))
+    (i32.and (i32.const 0x3fffff))
+    ref.i31
   )
 )
