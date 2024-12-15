@@ -193,6 +193,9 @@ const runtime = {
     },
     "random": (_, to) => {
       return Math.floor(Math.random() * to)
+    },
+    "time": (_) => {
+      return Math.floor(performance.now() * 1000)
     }
   }
 }
@@ -220,6 +223,8 @@ async function main() {
   await loadLib("Matcher")
   await loadLib("Random")
   await loadLib("Ostap")
+  await loadLib("STM")
+  await loadLib("Timer")
 
   const mainModule = await WebAssembly.instantiate(fs.readFileSync(filePath), runtime)
   mainModule.instance.exports.main()
