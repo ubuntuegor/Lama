@@ -93,6 +93,9 @@ function basePrintf(args) {
   return printf(formatString, ...args)
 }
 
+let lastAddress = 0;
+const addressSpace = new Map();
+
 const runtime = {
   "Std": {
     "write": (_, num) => {
@@ -156,6 +159,21 @@ const runtime = {
       }
 
       return internalizeString(inner(arg))
+    },
+    "flatCompare": (_, p, q) => {
+      if (typeof p === "number") {
+        if (typeof q === "number") {
+          return p - q
+        }
+        return -1;
+      }
+      if (typeof q === "number") {
+        return 1
+      }
+
+      if (!addressSpace.has(p)) addressSpace.set(p, lastAddress++)
+      if (!addressSpace.has(q)) addressSpace.set(q, lastAddress++)
+      return addressSpace.get(p) - addressSpace.get(q)
     }
   }
 }
@@ -175,6 +193,11 @@ async function main() {
   await loadLib("Lazy")
   await loadLib("Ref")
   await loadLib("Fun")
+  await loadLib("List")
+  await loadLib("Array")
+  await loadLib("Buffer")
+  await loadLib("Collection")
+  await loadLib("Data")
 
   const mainModule = await WebAssembly.instantiate(fs.readFileSync(filePath), runtime)
   mainModule.instance.exports.main()

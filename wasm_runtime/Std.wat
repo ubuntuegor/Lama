@@ -9,7 +9,7 @@
   (table $tbl (export "_table") 0 (ref any) i32.const 0 ref.i31)
 
   ;; helpers
-  (func (export "elem") (param $arr (ref any)) (param $index i32) (result (ref any))
+  (func $elem (export "elem") (param $arr (ref any)) (param $index i32) (result (ref any))
     local.get $arr
     (block (param (ref any)) (result (ref any))
       br_on_cast_fail 0 (ref any) (ref $sexp_type)
@@ -48,6 +48,15 @@
       return
     )
     (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $closure_type)
+      struct.get $closure_type 1
+      local.get $index
+      local.get $value
+      array.set $array_type
+      local.get $value
+      return
+    )
+    (block (param (ref any)) (result (ref any))
       br_on_cast_fail 0 (ref any) (ref $string_type)
       local.get $index
       local.get $value
@@ -63,7 +72,7 @@
     array.set $array_type
     local.get $value
   )
-  (func (export "strcmp") (param $str1 (ref $string_type)) (param $str2 (ref $string_type)) (result i32)
+  (func $strcmp (export "strcmp") (param $str1 (ref $string_type)) (param $str2 (ref $string_type)) (result i32)
     (local $tmp i32) (local $i i32)
     (i32.sub (array.len (local.get $str1)) (array.len (local.get $str2)))
     local.tee $tmp
@@ -189,6 +198,23 @@
 
     local.get $arr
   )
+  (func $clone_array (param $arr (ref $array_type)) (result (ref $array_type))
+    (local $new_arr (ref $array_type))
+    (ref.i31 (i32.const 0))
+    (array.len (local.get $arr))
+    array.new $array_type
+    local.set $new_arr
+
+    (array.copy $array_type $array_type
+      (local.get $new_arr)
+      (i32.const 0)
+      (local.get $arr)
+      (i32.const 0)
+      (array.len (local.get $arr))
+    )
+
+    (return (local.get $new_arr))
+  )
 
   ;; stdlib
   (func (export "length") (param (ref $array_type)) (param $arg (ref any)) (result (ref any))
@@ -215,5 +241,300 @@
     (ref.i31 (i32.const 0))
     (i31.get_s (ref.cast (ref i31) (local.get $len)))
     array.new $array_type
+  )
+  (func $kindOf (export "kindOf") (param (ref $array_type)) (param $p (ref any)) (result (ref any))
+    local.get $p
+    (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $string_type)
+      (return (ref.i31 (i32.const 1)))
+    )
+    (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $array_type)
+      (return (ref.i31 (i32.const 3)))
+    )
+    (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $sexp_type)
+      (return (ref.i31 (i32.const 5)))
+    )
+    (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $closure_type)
+      (return (ref.i31 (i32.const 7)))
+    )
+    ref.cast (ref i31)
+    (return (ref.i31 (i32.const 9)))
+  )
+  (func $compare (export "compare") (param (ref $array_type)) (param $p (ref any)) (param $q (ref any)) (result (ref any))
+    (local $tmp i32) (local $i i32) (local $pa (ref $array_type)) (local $qa (ref $array_type))
+    (ref.cast (ref eq) (local.get $p))
+    (ref.cast (ref eq) (local.get $q))
+    (if (ref.eq) (then
+      (return (ref.i31 (i32.const 0)))
+    ))
+
+    (block (result (ref any))
+      (br_on_cast_fail 0 (ref any) (ref i31) (local.get $p))
+      i31.get_s
+      (block (param i32) (result (ref any))
+        (br_on_cast_fail 0 (ref any) (ref i31) (local.get $q))
+        i31.get_s
+        (return (ref.i31 (i32.sub)))
+      )
+      (return (ref.i31 (i32.const -1)))
+    )
+    drop
+    (block (result (ref any))
+      (br_on_cast_fail 0 (ref any) (ref i31) (local.get $q))
+      (return (ref.i31 (i32.const 1)))
+    )
+    drop
+
+    (i31.get_s (ref.cast (ref i31) (call $kindOf (array.new_fixed $array_type 0) (local.get $p))))
+    (i31.get_s (ref.cast (ref i31) (call $kindOf (array.new_fixed $array_type 0) (local.get $q))))
+    i32.sub
+    local.tee $tmp
+    (if (then
+      (return (ref.i31 (local.get $tmp)))
+    ))
+
+    (block $outer (result (ref $array_type) (ref $array_type))
+      local.get $p
+      (block (param (ref any)) (result (ref any))
+        br_on_cast_fail 0 (ref any) (ref $string_type)
+        (ref.cast (ref $string_type) (local.get $q))
+        (return (ref.i31 (call $strcmp)))
+      )
+      (block (param (ref any)) (result (ref any))
+        br_on_cast_fail 0 (ref any) (ref $array_type)
+        (ref.cast (ref $array_type) (local.get $q))
+        br $outer
+      )
+      (block (param (ref any)) (result (ref any))
+        br_on_cast_fail 0 (ref any) (ref $sexp_type)
+        struct.get $sexp_type 0
+        (ref.cast (ref $sexp_type) (local.get $q))
+        struct.get $sexp_type 0
+        i32.sub
+        local.tee $tmp
+        (if (then
+          (return (ref.i31 (local.get $tmp)))
+        ))
+
+        (ref.cast (ref $sexp_type) (local.get $p))
+        struct.get $sexp_type 1
+        (ref.cast (ref $sexp_type) (local.get $q))
+        struct.get $sexp_type 1
+        br $outer
+      )
+      (block (param (ref any)) (result (ref any))
+        br_on_cast_fail 0 (ref any) (ref $closure_type)
+        struct.get $closure_type 1
+        (ref.cast (ref $closure_type) (local.get $q))
+        struct.get $closure_type 1
+        br $outer
+      )
+      unreachable
+    )
+
+    local.set $qa
+    local.set $pa
+
+    (array.len (local.get $pa))
+    (array.len (local.get $qa))
+    i32.sub
+    local.tee $tmp
+    (if (then
+      (return (ref.i31 (local.get $tmp)))
+    ))
+
+    (block $exit
+      (loop $loop
+        (i32.eqz (i32.lt_u (local.get $i) (array.len (local.get $pa))))
+        br_if $exit
+
+        (call $compare
+          (array.new_fixed $array_type 0)
+          (array.get $array_type (local.get $pa) (local.get $i))
+          (array.get $array_type (local.get $qa) (local.get $i))
+        )
+        ref.cast (ref i31)
+        i31.get_s
+        local.tee $tmp
+        (if (then
+          (return (ref.i31 (local.get $tmp)))
+        ))
+
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        br $loop
+      )
+    )
+
+    (ref.i31 (i32.const 0))
+  )
+  (func (export "clone") (param (ref $array_type)) (param $p (ref any)) (result (ref any))
+    (local $new_len i32) (local $new_str (ref $string_type))
+    local.get $p
+    (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $string_type)
+      drop
+      i32.const 0
+      (array.len (ref.cast (ref $string_type) (local.get $p)))
+      local.tee $new_len
+      array.new $string_type
+      local.set $new_str
+
+      (array.copy $string_type $string_type
+        (local.get $new_str)
+        (i32.const 0)
+        (ref.cast (ref $string_type) (local.get $p))
+        (i32.const 0)
+        (local.get $new_len)
+      )
+
+      (return (local.get $new_str))
+    )
+    (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $array_type)
+      call $clone_array
+      return
+    )
+    (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $sexp_type)
+      struct.get $sexp_type 0
+      (struct.get $sexp_type 1 (ref.cast (ref $sexp_type) (local.get $p)))
+      call $clone_array
+      (return (struct.new $sexp_type))
+    )
+    (block (param (ref any)) (result (ref any))
+      br_on_cast_fail 0 (ref any) (ref $closure_type)
+      struct.get $closure_type 0
+      (struct.get $closure_type 1 (ref.cast (ref $closure_type) (local.get $p)))
+      call $clone_array
+      (return (struct.new $closure_type))
+    )
+    ref.cast (ref i31)
+  )
+  (func $strcat (export "i__Infix_4343") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    (local $res (ref $string_type))
+    i32.const 0
+    (array.len (ref.cast (ref $string_type) (local.get $a)))
+    (array.len (ref.cast (ref $string_type) (local.get $b)))
+    i32.add
+    array.new $string_type
+    local.set $res
+
+    (array.copy $string_type $string_type
+      (local.get $res)
+      (i32.const 0)
+      (ref.cast (ref $string_type) (local.get $a))
+      (i32.const 0)
+      (array.len (ref.cast (ref $string_type) (local.get $a)))
+    )
+
+    (array.copy $string_type $string_type
+      (local.get $res)
+      (array.len (ref.cast (ref $string_type) (local.get $a)))
+      (ref.cast (ref $string_type) (local.get $b))
+      (i32.const 0)
+      (array.len (ref.cast (ref $string_type) (local.get $b)))
+    )
+
+    local.get $res
+  )
+  (func (export "fst") (param (ref $array_type)) (param $p (ref any)) (result (ref any))
+    (call $elem (local.get $p) (i32.const 0))
+  )
+  (func (export "snd") (param (ref $array_type)) (param $p (ref any)) (result (ref any))
+    (call $elem (local.get $p) (i32.const 1))
+  )
+  (func (export "compareTags") (param (ref $array_type)) (param $p (ref any)) (param $q (ref any)) (result (ref any))
+    (ref.cast (ref $sexp_type) (local.get $p))
+    struct.get $sexp_type 0
+    (ref.cast (ref $sexp_type) (local.get $q))
+    struct.get $sexp_type 0
+    i32.sub
+    ref.i31
+  )
+  (func (export "s__Infix_43") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    (i31.get_s (ref.cast (ref i31) (local.get $a)))
+    (i31.get_s (ref.cast (ref i31) (local.get $b)))
+    (ref.i31 (i32.add))
+  )
+  (func (export "s__Infix_45") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    (i31.get_s (ref.cast (ref i31) (local.get $a)))
+    (i31.get_s (ref.cast (ref i31) (local.get $b)))
+    (ref.i31 (i32.sub))
+  )
+  (func (export "s__Infix_42") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    (i31.get_s (ref.cast (ref i31) (local.get $a)))
+    (i31.get_s (ref.cast (ref i31) (local.get $b)))
+    (ref.i31 (i32.mul))
+  )
+  (func (export "s__Infix_47") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    (i31.get_s (ref.cast (ref i31) (local.get $a)))
+    (i31.get_s (ref.cast (ref i31) (local.get $b)))
+    (ref.i31 (i32.div_s))
+  )
+  (func (export "s__Infix_37") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    (i31.get_s (ref.cast (ref i31) (local.get $a)))
+    (i31.get_s (ref.cast (ref i31) (local.get $b)))
+    (ref.i31 (i32.rem_s))
+  )
+  (func (export "s__Infix_6161") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    (ref.cast (ref eq) (local.get $a))
+    (ref.cast (ref eq) (local.get $b))
+    (ref.i31 (ref.eq))
+  )
+  (func (export "s__Infix_3361") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    (i31.get_s (ref.cast (ref i31) (local.get $a)))
+    (i31.get_s (ref.cast (ref i31) (local.get $b)))
+    (ref.i31 (i32.ne))
+  )
+  (func (export "s__Infix_6061") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    (i31.get_s (ref.cast (ref i31) (local.get $a)))
+    (i31.get_s (ref.cast (ref i31) (local.get $b)))
+    (ref.i31 (i32.le_s))
+  )
+  (func (export "s__Infix_60") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    (i31.get_s (ref.cast (ref i31) (local.get $a)))
+    (i31.get_s (ref.cast (ref i31) (local.get $b)))
+    (ref.i31 (i32.lt_s))
+  )
+  (func (export "s__Infix_6261") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    (i31.get_s (ref.cast (ref i31) (local.get $a)))
+    (i31.get_s (ref.cast (ref i31) (local.get $b)))
+    (ref.i31 (i32.ge_s))
+  )
+  (func (export "s__Infix_62") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    (i31.get_s (ref.cast (ref i31) (local.get $a)))
+    (i31.get_s (ref.cast (ref i31) (local.get $b)))
+    (ref.i31 (i32.gt_s))
+  )
+  (func (export "s__Infix_3838") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    (i31.get_s (ref.cast (ref i31) (local.get $a)))
+    (i31.get_s (ref.cast (ref i31) (local.get $b)))
+    (if (param i32) (result i32)
+    (then
+      i32.const 0
+      i32.ne
+    )
+    (else
+      drop
+      i32.const 0
+    ))
+    ref.i31
+  )
+  (func (export "s__Infix_3333") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    (i31.get_s (ref.cast (ref i31) (local.get $a)))
+    (i31.get_s (ref.cast (ref i31) (local.get $b)))
+    i32.or
+    (i32.ne (i32.const 0))
+    ref.i31
+  )
+  (func (export "s__Infix_58") (param (ref $array_type)) (param $a (ref any)) (param $b (ref any)) (result (ref any))
+    i32.const 848787 ;; hash of "cons"
+    local.get $a
+    local.get $b
+    array.new_fixed $array_type 2
+    struct.new $sexp_type
   )
 )

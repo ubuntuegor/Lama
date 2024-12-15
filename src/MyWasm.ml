@@ -746,19 +746,19 @@ let rec compile_list env ast =
   | Expr.Binop (op, lhs, rhs) ->
       let env, lhscode = compile_list env lhs in
       let env, rhscode = compile_list env rhs in
-      let env, opcode =
+      let env, opcode, should_unbox =
         match op with
-        | "+" -> (env, [ phrase @@ get_binary Wa.I32Op.Add ])
-        | "-" -> (env, [ phrase @@ get_binary Wa.I32Op.Sub ])
-        | "*" -> (env, [ phrase @@ get_binary Wa.I32Op.Mul ])
-        | "/" -> (env, [ phrase @@ get_binary Wa.I32Op.DivS ])
-        | "%" -> (env, [ phrase @@ get_binary Wa.I32Op.RemS ])
-        | "==" -> (env, [ phrase @@ get_compare Wa.I32Op.Eq ])
-        | "!=" -> (env, [ phrase @@ get_compare Wa.I32Op.Ne ])
-        | "<=" -> (env, [ phrase @@ get_compare Wa.I32Op.LeS ])
-        | "<" -> (env, [ phrase @@ get_compare Wa.I32Op.LtS ])
-        | ">=" -> (env, [ phrase @@ get_compare Wa.I32Op.GeS ])
-        | ">" -> (env, [ phrase @@ get_compare Wa.I32Op.GtS ])
+        | "+" -> (env, [ phrase @@ get_binary Wa.I32Op.Add ], true)
+        | "-" -> (env, [ phrase @@ get_binary Wa.I32Op.Sub ], true)
+        | "*" -> (env, [ phrase @@ get_binary Wa.I32Op.Mul ], true)
+        | "/" -> (env, [ phrase @@ get_binary Wa.I32Op.DivS ], true)
+        | "%" -> (env, [ phrase @@ get_binary Wa.I32Op.RemS ], true)
+        | "==" -> (env, [ phrase @@ Wa.RefEq ], false)
+        | "!=" -> (env, [ phrase @@ get_compare Wa.I32Op.Ne ], true)
+        | "<=" -> (env, [ phrase @@ get_compare Wa.I32Op.LeS ], true)
+        | "<" -> (env, [ phrase @@ get_compare Wa.I32Op.LtS ], true)
+        | ">=" -> (env, [ phrase @@ get_compare Wa.I32Op.GeS ], true)
+        | ">" -> (env, [ phrase @@ get_compare Wa.I32Op.GtS ], true)
         | "&&" ->
             let type_idx, env =
               env
@@ -782,17 +782,26 @@ let rec compile_list env ast =
                          phrase @@ get_compare Wa.I32Op.Ne;
                        ],
                        [ phrase Wa.Drop; phrase @@ get_const 0 ] );
-              ] )
+              ],
+              true )
         | "!!" ->
             ( env,
               [
                 phrase @@ get_binary Wa.I32Op.Or;
                 phrase @@ get_const 0;
                 phrase @@ get_compare Wa.I32Op.Ne;
-              ] )
+              ],
+              true )
         | _ -> report_error @@ Printf.sprintf "unsupported binop %s\n" op
       in
-      (env, lhscode @ unbox @ rhscode @ unbox @ opcode @ box)
+      ( env,
+        lhscode
+        @ (if should_unbox then unbox
+           else [ phrase @@ Wa.RefCast (NoNull, EqHT) ])
+        @ rhscode
+        @ (if should_unbox then unbox
+           else [ phrase @@ Wa.RefCast (NoNull, EqHT) ])
+        @ opcode @ box )
   | Expr.Const i -> (env, [ phrase @@ get_const i ] @ box)
   | Expr.Skip -> (env, [])
   | Expr.Seq (s1, s2) ->

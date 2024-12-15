@@ -26,7 +26,7 @@ STM.o: List.o Fun.o
 %.wasm: %.lama
 	LAMA=../wasm_runtime $(LAMAC) -I . -wasm $<
 
-wasm: Lazy.wasm Ref.wasm Fun.wasm
+wasm: Lazy.wasm Ref.wasm Fun.wasm List.wasm Array.wasm Buffer.wasm Collection.wasm Data.wasm
 
 clean:
 	rm -Rf *.s *.o *.i *~ *.wasm *.wat
