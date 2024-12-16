@@ -600,7 +600,9 @@ module Env = struct
       | x :: xs ->
           M.map
             (function
-              | Local (_, local_idx) -> Closure (-1, local_idx) | other -> other)
+              | Local (_, local_idx) -> Closure (-1, local_idx)
+              | Closure (_, local_idx) -> Closure (-1, local_idx)
+              | other -> other)
             x
           :: inner xs
     in
