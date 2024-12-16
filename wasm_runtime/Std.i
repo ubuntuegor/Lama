@@ -37,3 +37,4 @@ F,random,1;
 F,makeString,1;
 F,hash,1;
 F,time,0;
+F,stringcat,1;

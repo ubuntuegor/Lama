@@ -156,7 +156,36 @@ const runtime = {
             return tag + (strs.length > 0 ? ` (${strs.join(", ")})` : "")
           }
         }
-        return "unknown type"
+        return "*** invalid data_header ***"
+      }
+
+      return internalizeString(inner(arg))
+    },
+    "stringcat": (_, arg) => {
+      function inner(arg) {
+        if (typeof arg == "number") {
+          return ""
+        }
+        if (runtime.Std.is_string(arg)) {
+          return externalizeString(arg)
+        }
+        if (runtime.Std.is_sexp(arg)) {
+          const [tag, vals] = externalizeSexp(arg)
+          if (tag == "cons") {
+            const elems = [vals[0]]
+            let next = vals[1]
+            while (runtime.Std.is_sexp(next)) {
+              const [_, nextVals] = externalizeSexp(next)
+              elems.push(nextVals[0])
+              next = nextVals[1]
+            }
+            const strs = elems.map(v => inner(v))
+            return strs.join("")
+          } else {
+            return `*** non-list data_header: ${tag} ***`
+          }
+        }
+        return "*** invalid data_header ***"
       }
 
       return internalizeString(inner(arg))
