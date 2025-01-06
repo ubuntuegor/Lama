@@ -537,10 +537,10 @@
 
     local.get $res
   )
-  (func (export "fst") (param (ref $array_type)) (param $p (ref any)) (result (ref any))
+  (func (export "fst") (export "hd") (param (ref $array_type)) (param $p (ref any)) (result (ref any))
     (call $elem (local.get $p) (i32.const 0))
   )
-  (func (export "snd") (param (ref $array_type)) (param $p (ref any)) (result (ref any))
+  (func (export "snd") (export "tl") (param (ref $array_type)) (param $p (ref any)) (result (ref any))
     (call $elem (local.get $p) (i32.const 1))
   )
   (func (export "compareTags") (param (ref $array_type)) (param $p (ref any)) (param $q (ref any)) (result (ref any))

@@ -97,6 +97,8 @@ let hash tag =
   done;
   !h
 
+type w_global = ImportGlobal of string * string | ModuleGlobal
+
 type w_func =
   | ImportFunc of string * string * int (* module, name, type_idx *)
   | Func of int * int * Wa.instr list (* type_idx, locals_count, body *)
@@ -108,7 +110,9 @@ type w_value =
   | Callable of int * bool (* func_idx, is_vararg *)
 [@@deriving gt ~options:{ show }]
 
-type w_export = ExportFunc of string * int (* name, func_idx *)
+type w_export =
+  | ExportFunc of string * int
+  | ExportGlobal of string * int (* name, idx *)
 
 let find_index v l =
   let rec inner v i = function
@@ -155,7 +159,7 @@ module Result = struct
     value_locs : w_value Mi.t Mi.t;
     call_map : Si.t Mi.t;
     datas : string list;
-    globals : int;
+    globals : w_global list;
     exports : w_export list;
     helpers : int M.t;
     all_locals : int;
@@ -169,7 +173,7 @@ module Result = struct
       value_locs = Mi.empty;
       call_map = Mi.empty;
       datas = [];
-      globals = 0;
+      globals = [];
       exports = [];
       helpers = M.empty;
       all_locals = 0;
@@ -192,6 +196,14 @@ module Result = struct
         result.functions @ [ ImportFunc (module_name, name, type_idx) ]
       in
       (func_idx, { result with types; functions })
+
+  let add_global_import module_name name result =
+    if is_last (function ImportGlobal _ -> false | _ -> true) result.globals
+    then report_error "all imports should be added before other globals"
+    else
+      let idx = List.length result.globals in
+      let globals = result.globals @ [ ImportGlobal (module_name, name) ] in
+      (idx, { result with globals })
 
   let allocate_functions n result =
     let start_idx = List.length result.functions in
@@ -225,8 +237,14 @@ module Result = struct
     let exports = ExportFunc (name, idx) :: result.exports in
     { result with exports }
 
+  let export_global name idx result =
+    let exports = ExportGlobal (name, idx) :: result.exports in
+    { result with exports }
+
   let add_global result =
-    (result.globals, { result with globals = result.globals + 1 })
+    let idx = List.length result.globals in
+    let globals = result.globals @ [ ModuleGlobal ] in
+    (idx, { result with globals })
 
   let upsert_data str result =
     let data_idx, datas = upsert str result.datas in
@@ -385,6 +403,20 @@ module Result = struct
                      })
           | _ -> None)
         result.functions
+      @ List.filter_map
+          (function
+            | ImportGlobal (module_name, name) ->
+                Some
+                  (phrase
+                  @@ Wa.
+                       {
+                         module_name = decode_s module_name;
+                         item_name = decode_s name;
+                         idesc =
+                           phrase @@ Wa.GlobalImport (GlobalT (Var, any_type));
+                       })
+            | _ -> None)
+          result.globals
     in
     let funcs =
       List.filter_map
@@ -404,13 +436,18 @@ module Result = struct
         result.functions
     in
     let globals =
-      List.init result.globals (fun _ ->
-          phrase
-          @@ Wa.
-               {
-                 gtype = GlobalT (Var, any_type);
-                 ginit = phrase @@ [ phrase @@ get_const 0 ] @ box;
-               })
+      List.filter_map
+        (function
+          | ModuleGlobal ->
+              Some
+                (phrase
+                @@ Wa.
+                     {
+                       gtype = GlobalT (Var, any_type);
+                       ginit = phrase @@ [ phrase @@ get_const 0 ] @ box;
+                     })
+          | _ -> None)
+        result.globals
     in
     let exports =
       List.map
@@ -421,6 +458,13 @@ module Result = struct
                    {
                      name = decode_s name;
                      edesc = phrase @@ FuncExport (get_idx func_idx);
+                   }
+          | ExportGlobal (name, idx) ->
+              phrase
+              @@ Wa.
+                   {
+                     name = decode_s name;
+                     edesc = phrase @@ GlobalExport (get_idx idx);
                    })
         result.exports
     in
@@ -488,8 +532,8 @@ module Env = struct
     let type_idx, result = Result.upsert_type t env.result in
     (type_idx, { env with result })
 
-  let bind name v scopes =
-    if M.mem name (List.hd scopes) then
+  let bind ?(no_check = false) name v scopes =
+    if (not no_check) && M.mem name (List.hd scopes) then
       report_error @@ Printf.sprintf "name \"%s\" is already defined" name
     else M.add name v (List.hd scopes) :: List.tl scopes
 
@@ -519,7 +563,14 @@ module Env = struct
     let func_idx, result =
       Result.add_function_import module_name name t env.result
     in
-    let scopes = bind name (Callable (func_idx, vararg)) env.scopes in
+    let scopes =
+      bind name (Callable (func_idx, vararg)) env.scopes ~no_check:true
+    in
+    { env with result; scopes }
+
+  let add_global_import module_name name env =
+    let idx, result = Result.add_global_import module_name name env.result in
+    let scopes = bind name (Global idx) env.scopes ~no_check:true in
     { env with result; scopes }
 
   let allocate_functions names env =
@@ -572,6 +623,10 @@ module Env = struct
 
   let export_function name idx env =
     let result = Result.export_function name idx env.result in
+    { env with result }
+
+  let export_global name idx env =
+    let result = Result.export_global name idx env.result in
     { env with result }
 
   let add_global name env =
@@ -1266,19 +1321,31 @@ let rec compile_list env ast =
       @@ Printf.sprintf "unsupported structure %s\n" (GT.show Expr.t ast)
 
 and compile_scope decls instr is_top_level env =
+  List.iter
+    (fun (name, decl) ->
+      match decl with
+      | `Public, _ when not is_top_level ->
+          report_error
+          @@ Printf.sprintf "public declaration %s should be top-level" name
+      | _ -> ())
+    decls;
+
   let locals =
     List.filter_map
       (fun (name, decl) ->
         match decl with
-        | `Local, `Variable init -> Some (name, init)
-        | _, `Variable _ -> report_error "only local variables supported"
+        | ((`Local | `Public) as q), `Variable init -> Some (name, q, init)
+        | _, `Variable _ ->
+            report_error "external variables are not supported yet"
         | _ -> None)
       decls
   in
   let env =
     List.fold_left
-      (fun env (name, _) ->
-        if is_top_level then snd (env |> Env.add_global name)
+      (fun env (name, q, _) ->
+        if is_top_level then
+          let idx, env = env |> Env.add_global name in
+          match q with `Public -> env |> Env.export_global name idx | _ -> env
         else snd (env |> Env.add_local name))
       env locals
   in
@@ -1303,17 +1370,14 @@ and compile_scope decls instr is_top_level env =
         let func_idx, env =
           compile_and_add_function env args body (Env.place_function name)
         in
-        let env =
-          match q with
-          | `Public -> env |> Env.export_function name func_idx
-          | _ -> env
-        in
-        env)
+        match q with
+        | `Public -> env |> Env.export_function name func_idx
+        | _ -> env)
       env functions
   in
   let env, locals_init_code =
     locals
-    |> List.map (fun (name, init) ->
+    |> List.map (fun (name, _, init) ->
            match init with Some i -> (name, i) | _ -> (name, Expr.Const 0))
     |> List.fold_left
          (fun (env, acc) (name, instr) ->
@@ -1379,7 +1443,6 @@ let start_build cmd ((imports, _), p) =
   let array_type_idx, env = env |> Env.upsert_type array_type in
   let env =
     imports
-    |> List.sort_uniq String.compare
     |> List.map (fun i -> (i, Interface.find i paths))
     |> List.fold_left
          (fun env (m, (_, is)) ->
@@ -1406,11 +1469,15 @@ let start_build cmd ((imports, _), p) =
                            [ any_type ] ))
                    in
                    env |> Env.add_function_import m name false func_type
+               | `Variable name -> env |> Env.add_global_import m name
                | _ -> env)
              env is)
          env
   in
   compile p env
+
+let get_std_path () =
+  match Sys.getenv_opt "LAMA" with Some s -> s | None -> Stdpath.path ^ "/wasm"
 
 let build cmd prog =
   let module' = start_build cmd prog in

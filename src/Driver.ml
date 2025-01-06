@@ -30,8 +30,11 @@ class options args =
     val i = ref 1
     val infile = ref (None : string option)
     val outfile = ref (None : string option)
-    val paths = ref [ X86.get_std_path () ]
-    val mode = ref (`Default : [ `Default | `Eval | `SM | `Compile | `BC | `Wasm ])
+    val paths = ref []
+
+    val mode =
+      ref (`Default : [ `Default | `Eval | `SM | `Compile | `BC | `Wasm ])
+
     val curdir = Unix.getcwd ()
     val debug = ref false
 
@@ -42,45 +45,48 @@ class options args =
     val dump = ref 0
 
     initializer
-    let rec loop () =
-      match self#peek with
-      | Some opt ->
-          (match opt with
-          (* Workaround until Ostap starts to memoize properly *)
-          | "-w" -> self#set_workaround
-          (* end of the workaround *)
-          | "-c" -> self#set_mode `Compile
-          | "-o" -> (
-              match self#peek with
-              | None ->
+      let rec loop () =
+        match self#peek with
+        | Some opt ->
+            (match opt with
+            (* Workaround until Ostap starts to memoize properly *)
+            | "-w" -> self#set_workaround
+            (* end of the workaround *)
+            | "-c" -> self#set_mode `Compile
+            | "-o" -> (
+                match self#peek with
+                | None ->
+                    raise
+                      (Commandline_error
+                         "File name expected after '-o' specifier")
+                | Some fname -> self#set_outfile fname)
+            | "-I" -> (
+                match self#peek with
+                | None ->
+                    raise
+                      (Commandline_error "Path expected after '-I' specifier")
+                | Some path -> self#add_include_path path)
+            | "-s" -> self#set_mode `SM
+            | "-b" -> self#set_mode `BC
+            | "-i" -> self#set_mode `Eval
+            | "-wasm" -> self#set_mode `Wasm
+            | "-ds" -> self#set_dump dump_sm
+            | "-dsrc" -> self#set_dump dump_source
+            | "-dp" -> self#set_dump dump_ast
+            | "-h" -> self#set_help
+            | "-v" -> self#set_version
+            | "-g" -> self#set_debug
+            | _ ->
+                if opt.[0] = '-' then
                   raise
-                    (Commandline_error "File name expected after '-o' specifier")
-              | Some fname -> self#set_outfile fname)
-          | "-I" -> (
-              match self#peek with
-              | None ->
-                  raise (Commandline_error "Path expected after '-I' specifier")
-              | Some path -> self#add_include_path path)
-          | "-s" -> self#set_mode `SM
-          | "-b" -> self#set_mode `BC
-          | "-i" -> self#set_mode `Eval
-          | "-wasm" -> self#set_mode `Wasm
-          | "-ds" -> self#set_dump dump_sm
-          | "-dsrc" -> self#set_dump dump_source
-          | "-dp" -> self#set_dump dump_ast
-          | "-h" -> self#set_help
-          | "-v" -> self#set_version
-          | "-g" -> self#set_debug
-          | _ ->
-              if opt.[0] = '-' then
-                raise
-                  (Commandline_error
-                     (Printf.sprintf "Invalid command line specifier ('%s')" opt))
-              else self#set_infile opt);
-          loop ()
-      | None -> ()
-    in
-    loop ()
+                    (Commandline_error
+                       (Printf.sprintf "Invalid command line specifier ('%s')"
+                          opt))
+                else self#set_infile opt);
+            loop ()
+        | None -> ()
+      in
+      loop ()
 
     (* Workaround until Ostap starts to memoize properly *)
     method is_workaround = !const
@@ -107,8 +113,6 @@ class options args =
             (Commandline_error
                (Printf.sprintf "Output file ('%s') already specified" name'))
 
-    method private add_include_path path = paths := path :: !paths
-
     method private set_mode s =
       match !mode with
       | `Default -> mode := s
@@ -121,6 +125,7 @@ class options args =
         Some args.(j))
       else None
 
+    method add_include_path path = paths := path :: !paths
     method get_mode = !mode
 
     method get_output_option =
@@ -189,6 +194,9 @@ let[@ocaml.warning "-32"] main =
   try
     let cmd = new options Sys.argv in
     cmd#greet;
+    (match cmd#get_mode with
+    | `Wasm -> cmd#add_include_path (MyWasm.get_std_path ())
+    | _ -> cmd#add_include_path (X86.get_std_path ()));
     match
       try Language.run_parser cmd
       with Language.Semantic_error msg -> `Fail msg

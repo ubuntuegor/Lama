@@ -15,11 +15,14 @@ all:
 	$(MAKE) -C runtime invariants_check_debug_print.o
 
 STD_FILES=$(shell ls stdlib/*.[oi] stdlib/*.lama runtime/runtime.a runtime/Std.i)
+WASM_STD_FILES=$(shell ls stdlib/*.i stdlib/*.wasm wasm_runtime/Std.wasm wasm_runtime/Std.i wasm_runtime/lib.js wasm_runtime/printf.js)
 
 install: all
 	$(INSTALL) $(EXECUTABLE) `opam var bin`
 	$(MKDIR) -p `opam var share`/Lama
 	$(INSTALL) $(STD_FILES) `opam var share`/Lama/
+	$(MKDIR) -p `opam var share`/Lama/wasm
+	$(INSTALL) $(WASM_STD_FILES) `opam var share`/Lama/wasm/
 
 uninstall:
 	$(RM) -r `opam var share`/Lama
