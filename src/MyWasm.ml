@@ -566,7 +566,7 @@ module Env = struct
     let scopes =
       bind name (Callable (func_idx, vararg)) env.scopes ~no_check:true
     in
-    { env with result; scopes }
+    (func_idx, { env with result; scopes })
 
   let add_global_import module_name name env =
     let idx, result = Result.add_global_import module_name name env.result in
@@ -1324,9 +1324,10 @@ and compile_scope decls instr is_top_level env =
   List.iter
     (fun (name, decl) ->
       match decl with
-      | `Public, _ when not is_top_level ->
+      | (`Public | `PublicExtern | `Extern), _ when not is_top_level ->
           report_error
-          @@ Printf.sprintf "public declaration %s should be top-level" name
+          @@ Printf.sprintf
+               "public or external declaration %s should be top-level" name
       | _ -> ())
     decls;
 
@@ -1354,25 +1355,44 @@ and compile_scope decls instr is_top_level env =
     List.filter_map
       (fun (name, decl) ->
         match decl with
-        | ((`Local | `Public) as q), `Fun (args, body) ->
-            Some (name, q, (args, body))
-        | _, `Fun _ -> report_error "external functions are not supported yet"
+        | q, `Fun (args, body) -> Some (name, q, (args, body))
         | _ -> None)
       decls
   in
   let env =
     env
-    |> Env.allocate_functions (List.map (fun (name, _, _) -> name) functions)
+    |> Env.allocate_functions
+         (List.filter_map
+            (fun (name, q, _) ->
+              match q with `Public | `Local -> Some name | _ -> None)
+            functions)
   in
   let env =
     List.fold_left
       (fun env (name, q, (args, body)) ->
-        let func_idx, env =
-          compile_and_add_function env args body (Env.place_function name)
+        let array_type_idx, env = env |> Env.upsert_type array_type in
+        let t =
+          Wt.(
+            FuncT
+              ( RefT (ref_type_of array_type_idx)
+                :: List.init (List.length args) (fun _ -> any_type),
+                [ any_type ] ))
         in
         match q with
-        | `Public -> env |> Env.export_function name func_idx
-        | _ -> env)
+        | `Public ->
+            let func_idx, env =
+              compile_and_add_function env args body (Env.place_function name)
+            in
+            env |> Env.export_function name func_idx
+        | `Local ->
+            snd
+            @@ compile_and_add_function env args body (Env.place_function name)
+        | `PublicExtern ->
+            let func_idx, env =
+              env |> Env.add_function_import "extern" name false t
+            in
+            env |> Env.export_function name func_idx
+        | `Extern -> snd @@ Env.add_function_import "extern" name false t env)
       env functions
   in
   let env, locals_init_code =
@@ -1459,7 +1479,7 @@ let start_build cmd ((imports, _), p) =
                            ],
                            [ any_type ] ))
                    in
-                   env |> Env.add_function_import m name true func_type
+                   snd @@ Env.add_function_import m name true func_type env
                | `Fun (name, args) ->
                    let func_type =
                      Wt.(
@@ -1468,7 +1488,7 @@ let start_build cmd ((imports, _), p) =
                            :: List.init args (fun _ -> any_type),
                            [ any_type ] ))
                    in
-                   env |> Env.add_function_import m name false func_type
+                   snd @@ Env.add_function_import m name false func_type env
                | `Variable name -> env |> Env.add_global_import m name
                | _ -> env)
              env is)
@@ -1477,7 +1497,9 @@ let start_build cmd ((imports, _), p) =
   compile p env
 
 let get_std_path () =
-  match Sys.getenv_opt "LAMA" with Some s -> s | None -> Stdpath.path ^ "/wasm"
+  match Sys.getenv_opt "LAMA" with
+  | Some s -> s
+  | None -> Stdpath.path ^ "/wasm"
 
 let build cmd prog =
   let module' = start_build cmd prog in

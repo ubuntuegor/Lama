@@ -50,7 +50,7 @@ export class LamaRuntime {
         this.stdlib_path = stdlib_path || std_path
     }
 
-    async initialize() {
+    async initialize(extern) {
         this.runtime = {
             "Std": {
                 "write": (_, num) => {
@@ -188,6 +188,10 @@ export class LamaRuntime {
                     else return 0
                 }
             }
+        }
+
+        if (extern) {
+            this.runtime.extern = extern
         }
 
         const stdModule = await this.loadModule(this.std_path + "/Std.wasm", this.runtime)

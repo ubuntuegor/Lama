@@ -1,6 +1,3 @@
-import Ref;
+external fun getString();
 
-var f = ref(5);
-
-f ::= deref(f) + 5;
-write(deref(f))
+printf("%s\n", getString())

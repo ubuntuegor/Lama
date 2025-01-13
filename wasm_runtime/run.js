@@ -10,7 +10,12 @@ async function main() {
   const filePath = argv[2]
 
   const runtime = new LamaRuntime(__dirname, __dirname + "/../stdlib")
-  await runtime.initialize()
+  const extern = {
+    "getString": (_) => {
+      return runtime.internalizeString("hallo")
+    }
+  }
+  await runtime.initialize(extern)
 
   await runtime.runModule("main", filePath)
 }
