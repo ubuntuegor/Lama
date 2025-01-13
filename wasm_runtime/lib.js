@@ -186,6 +186,12 @@ export class LamaRuntime {
                     const res = parseInt(this.externalizeString(arg))
                     if (res) return res
                     else return 0
+                },
+                "uppercase": (_, char) => {
+                    return String.fromCharCode(char).toUpperCase().charCodeAt(0)
+                },
+                "lowercase": (_, char) => {
+                    return String.fromCharCode(char).toLowerCase().charCodeAt(0)
                 }
             }
         }

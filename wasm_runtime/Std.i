@@ -41,3 +41,5 @@ F,hash,1;
 F,time,0;
 F,stringcat,1;
 F,stringInt,1;
+F,uppercase,1;
+F,lowercase,1;
