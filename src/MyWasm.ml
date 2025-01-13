@@ -1360,6 +1360,27 @@ and compile_scope decls instr is_top_level env =
       decls
   in
   let env =
+    List.fold_left
+      (fun env (name, q, (args, _)) ->
+        let array_type_idx, env = env |> Env.upsert_type array_type in
+        let t =
+          Wt.(
+            FuncT
+              ( RefT (ref_type_of array_type_idx)
+                :: List.init (List.length args) (fun _ -> any_type),
+                [ any_type ] ))
+        in
+        match q with
+        | `PublicExtern ->
+            let func_idx, env =
+              env |> Env.add_function_import "extern" name false t
+            in
+            env |> Env.export_function name func_idx
+        | `Extern -> snd @@ Env.add_function_import "extern" name false t env
+        | _ -> env)
+      env functions
+  in
+  let env =
     env
     |> Env.allocate_functions
          (List.filter_map
@@ -1370,14 +1391,6 @@ and compile_scope decls instr is_top_level env =
   let env =
     List.fold_left
       (fun env (name, q, (args, body)) ->
-        let array_type_idx, env = env |> Env.upsert_type array_type in
-        let t =
-          Wt.(
-            FuncT
-              ( RefT (ref_type_of array_type_idx)
-                :: List.init (List.length args) (fun _ -> any_type),
-                [ any_type ] ))
-        in
         match q with
         | `Public ->
             let func_idx, env =
@@ -1387,12 +1400,7 @@ and compile_scope decls instr is_top_level env =
         | `Local ->
             snd
             @@ compile_and_add_function env args body (Env.place_function name)
-        | `PublicExtern ->
-            let func_idx, env =
-              env |> Env.add_function_import "extern" name false t
-            in
-            env |> Env.export_function name func_idx
-        | `Extern -> snd @@ Env.add_function_import "extern" name false t env)
+        | _ -> env)
       env functions
   in
   let env, locals_init_code =
