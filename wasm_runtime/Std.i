@@ -43,3 +43,4 @@ F,stringcat,1;
 F,stringInt,1;
 F,uppercase,1;
 F,lowercase,1;
+F,readLine,0;

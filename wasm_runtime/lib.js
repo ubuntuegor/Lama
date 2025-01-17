@@ -8,8 +8,9 @@ function createReader() {
         if (readBuffer.length == 0) {
             const buf = Buffer.alloc(1024)
             const read = fs.readSync(0, buf)
+            if (read == 0) return 0;
             buf.subarray(0, read).toString().trim().split("\n").forEach(value => {
-                readBuffer.push(parseInt(value))
+                readBuffer.push(value)
             })
         }
 
@@ -41,7 +42,7 @@ export class LamaRuntime {
     lastAddress = 0
     addressSpace = new Map()
     regexps = []
-    readNum = createReader()
+    readLine = createReader()
     puts = createWriter()
     loadModule = createLoader()
 
@@ -59,7 +60,11 @@ export class LamaRuntime {
                 },
                 "read": (_) => {
                     fs.writeSync(1, "> ")
-                    return this.readNum()
+                    return parseInt(this.readLine())
+                },
+                "readLine": (_) => {
+                    const line = this.readLine()
+                    return line == 0 ? 0 : this.internalizeString(line)
                 },
                 "printf": (_, args) => {
                     args = this.externalizeArray(args)
@@ -169,7 +174,7 @@ export class LamaRuntime {
                     if (start < 0 || start > string.length) return -1
                     const regexp = this.regexps[pointer]
                     const result = regexp.exec(string.slice(start))
-                    return result ? result[0].length : -1
+                    return (result && result.index == 0) ? result[0].length : -1
                 },
                 "matchSubString": (_, subj, patt, pos) => {
                     subj = this.externalizeString(subj)
