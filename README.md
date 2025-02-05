@@ -5,6 +5,12 @@
 [1]:  https://github.com/PLTools/Lama/workflows/Build/badge.svg?branch=1.10
 [2]:  https://github.com/PLTools/Lama/actions
 
+# Lama WASM Demos
+
+**Lama Web Playground**: https://bnt.to/lama-web/
+
+**Game of Life in Lama**: https://bnt.to/lama-web/conway.html
+
 # Lama
 
 ![lama](lama.svg) is a programming language developed by JetBrains Research for educational purposes as an exemplary language to introduce the domain of programming languages, compilers, and tools.
